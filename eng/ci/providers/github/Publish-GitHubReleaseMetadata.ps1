@@ -13,6 +13,7 @@ if ([string]::IsNullOrWhiteSpace($Token)) { throw 'Token is required. Set GITHUB
 
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
 $releases = @($plan.releases)
+if ($releases.Count -eq 0 -and $plan.PSObject.Properties.Name -contains 'promotions') { $releases = @($plan.promotions) }
 if ($releases.Count -eq 0) {
     Write-Host 'The release plan is empty; no GitHub release metadata will be published.'
     return

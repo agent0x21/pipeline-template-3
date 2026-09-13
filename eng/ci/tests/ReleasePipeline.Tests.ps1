@@ -135,6 +135,36 @@ Describe 'Git release fixtures' {
     }
 }
 
+Describe 'Artifact promotion planning' {
+    It 'promotes a beta artifact to the next RC without rebuilding it' {
+        $provenancePath = Join-Path $TestDrive 'provenance.json'
+        [pscustomobject]@{
+            plan = [pscustomobject]@{ releases = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.4'; channel = 'beta'; tag = 'app/v2.1.0-beta.4'; commit = 'abc123' }) }
+            artifacts = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.4'; path = 'artifacts/app.zip'; sha256 = ('a' * 64) })
+        } | ConvertTo-Json -Depth 8 | Set-Content $provenancePath
+        $config = @{ components = @{ app = @{ tagPrefix = 'app'; path = 'apps/app' } } }
+        Mock -ModuleName ReleasePipeline Get-Git { @('app/v2.1.0-rc.2') }
+
+        $plan = New-ArtifactPromotionPlan -Config $config -ProvenancePath $provenancePath -TargetChannel rc
+
+        $plan.promotions.Count | Should -Be 1
+        $plan.promotions[0].semanticVersion | Should -Be '2.1.0-rc.3'
+        $plan.promotions[0].tag | Should -Be 'app/v2.1.0-rc.3'
+        $plan.promotions[0].sourceSha256 | Should -Be ('a' * 64)
+    }
+
+    It 'rejects promotion paths that skip the RC channel' {
+        $provenancePath = Join-Path $TestDrive 'beta-provenance.json'
+        [pscustomobject]@{
+            plan = [pscustomobject]@{ releases = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; channel = 'beta'; tag = 'app/v2.1.0-beta.1'; commit = 'abc123' }) }
+            artifacts = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; path = 'artifacts/app.zip'; sha256 = ('b' * 64) })
+        } | ConvertTo-Json -Depth 8 | Set-Content $provenancePath
+        $config = @{ components = @{ app = @{ tagPrefix = 'app'; path = 'apps/app' } } }
+
+        { New-ArtifactPromotionPlan -Config $config -ProvenancePath $provenancePath -TargetChannel stable } | Should -Throw '*beta -> rc -> stable*'
+    }
+}
+
 Describe 'Release packaging flow' {
     It 'creates a nonexistent output directory and writes empty provenance for an empty plan' {
         $planPath = Join-Path $TestDrive 'empty-plan.json'

@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Exercise a real legacy .NET Framework build, then add immutable artifact promotion.
+**Current focus:** Add registry adapters and promotion environment approvals without weakening release permissions.
 
 Completed foundation:
 
@@ -34,13 +34,13 @@ Completed foundation:
 - [x] Add fixture repositories for stable tags, prereleases, legacy tags, reruns, and tag conflicts.
 - [x] Expand Pester coverage for exact versions, prerelease numbering, dependency traversal, and concurrency retries.
 - [x] Validate configuration schemas and reject cycles, missing dependencies, invalid paths, and duplicate tag prefixes.
-- [ ] Test a real legacy .NET Framework solution through `vswhere.exe` and MSBuild.
+- [x] Test a real legacy .NET Framework solution through `vswhere.exe` and MSBuild.
 
 ### 3. Publish and promote immutable artifacts
 
 - [x] Add GitHub artifact retention and release metadata publication.
 - [ ] Add registry adapters for NuGet, npm, and container images where required.
-- [ ] Model beta → RC → stable promotion without rebuilding artifacts.
+- [x] Model beta → RC → stable promotion without rebuilding artifacts.
 - [ ] Add environment approvals, least-privilege permissions, and OIDC-ready publishing hooks.
 
 ### 4. Provider portability and adoption

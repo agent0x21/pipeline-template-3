@@ -206,6 +206,67 @@ function Get-ReleaseForCommit {
     return @($matches) | Select-Object -First 1
 }
 
+function New-ArtifactPromotionPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })][string]$ProvenancePath,
+        [Parameter(Mandatory)][ValidateSet('rc','stable')][string]$TargetChannel
+    )
+    $provenance = Get-Content -LiteralPath $ProvenancePath -Raw | ConvertFrom-Json
+    $sourceReleases = @($provenance.plan.releases)
+    $sourceArtifacts = @($provenance.artifacts)
+    if ($sourceReleases.Count -eq 0) { throw 'Artifact provenance does not contain any releases to promote.' }
+    if ($sourceArtifacts.Count -eq 0) { throw 'Artifact provenance does not contain any immutable artifacts to promote.' }
+
+    $promotions = foreach ($source in $sourceReleases) {
+        $componentName = [string]$source.component
+        if (-not $Config.components.ContainsKey($componentName)) { throw "Promotion source references unknown component '$componentName'." }
+        $component = $Config.components[$componentName]
+        $sourceVersion = ConvertFrom-SemVer ([string]$source.semanticVersion)
+        $sourceChannel = [string]$source.channel
+        if ($sourceChannel -ne $sourceVersion.Channel) { throw "Promotion source channel does not match semantic version for '$componentName'." }
+        if (($TargetChannel -eq 'rc' -and $sourceChannel -ne 'beta') -or ($TargetChannel -eq 'stable' -and $sourceChannel -ne 'rc')) {
+            throw "Cannot promote '$componentName' from '$sourceChannel' to '$TargetChannel'. Promotion must follow beta -> rc -> stable."
+        }
+
+        $artifact = @($sourceArtifacts | Where-Object { $_.component -eq $componentName -and $_.semanticVersion -eq $source.semanticVersion })
+        if ($artifact.Count -ne 1) { throw "Promotion source must contain exactly one artifact for '$componentName' version '$($source.semanticVersion)'." }
+        $sha256 = [string]$artifact[0].sha256
+        if ($sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "Promotion artifact for '$componentName' does not contain a valid SHA-256 digest." }
+
+        $targetVersion = if ($TargetChannel -eq 'stable') {
+            ConvertTo-SemVer $sourceVersion.Major $sourceVersion.Minor $sourceVersion.Patch '' 0
+        } else {
+            $baseVersion = ConvertTo-SemVer $sourceVersion.Major $sourceVersion.Minor $sourceVersion.Patch '' 0
+            $tagPrefix = [string]$component.tagPrefix
+            $sequence = @(Get-Git @('tag','--list',"$tagPrefix/v$baseVersion-rc.*") | ForEach-Object {
+                if ($_ -match '-rc\.(?<n>\d+)$') { [int]$Matches.n }
+            } | Measure-Object -Maximum).Maximum
+            if (-not $sequence) { $sequence = 0 }
+            ConvertTo-SemVer $sourceVersion.Major $sourceVersion.Minor $sourceVersion.Patch 'rc' ($sequence + 1)
+        }
+        [pscustomobject]@{
+            component = $componentName
+            commit = [string]$source.commit
+            channel = $TargetChannel
+            semanticVersion = $targetVersion
+            tag = "$($component.tagPrefix)/v$targetVersion"
+            sourceChannel = $sourceChannel
+            sourceSemanticVersion = [string]$source.semanticVersion
+            sourceTag = [string]$source.tag
+            sourceArtifactPath = [string]$artifact[0].path
+            sourceSha256 = $sha256.ToLowerInvariant()
+        }
+    }
+    [pscustomobject]@{
+        generatedAt = [DateTime]::UtcNow.ToString('o')
+        sourceProvenance = (Resolve-Path -LiteralPath $ProvenancePath).Path
+        targetChannel = $TargetChannel
+        promotions = @($promotions)
+    }
+}
+
 function New-ReleasePlan {
     [CmdletBinding()]
     param(
@@ -362,4 +423,4 @@ function New-ReleaseTag {
     [pscustomobject]@{ tag = $Release.tag; status = 'created' }
 }
 
-Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,New-ReleasePlan,Invoke-ComponentPackage,Invoke-ComponentBuild,New-ReleaseTag
+Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentBuild,New-ReleaseTag
