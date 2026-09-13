@@ -16,6 +16,8 @@
     "promote-artifact": "pwsh ./eng/ci/Invoke-ArtifactPromotion.ps1",
     "registry-plan": "pwsh ./eng/ci/New-RegistryPublicationPlan.ps1",
     "registry-publish": "pwsh ./eng/ci/Publish-RegistryArtifacts.ps1",
+    "github-release-assets": "pwsh ./eng/ci/providers/github/Publish-GitHubReleaseAssets.ps1",
+    "test-container-api": "pwsh ./eng/ci/Test-ApiContainer.ps1",
     "github-governance": "pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1",
     "test-ci": "pwsh ./eng/ci/Invoke-ReleasePipelineTests.ps1",
     "test-ci-legacy": "pwsh ./eng/ci/Test-LegacyMSBuildFixture.ps1",

@@ -34,6 +34,12 @@ components:
       command: dotnet publish ./apps/api -c Release -o .release-output/api
     package:
       path: .release-output/api
+    publishing:
+      adapter: container
+      image: ghcr.io/agent0x21/pipeline-template-3-api
+      dockerfile: apps/api/Dockerfile
+      context: .
+      oidc: true
     dependencies: []
   desktop:
     path: apps/desktop
