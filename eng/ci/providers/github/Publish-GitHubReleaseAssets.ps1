@@ -82,12 +82,12 @@ foreach ($release in $releases) {
     }
     $releaseProvenance = [pscustomobject]@{ plan = [pscustomobject]@{ releases = @($release) }; artifacts = @($releaseArtifacts) }
     $provenanceAsset = "$($release.component)-v$($release.semanticVersion).provenance.json"
-    $provenancePath = Join-Path ([IO.Path]::GetTempPath()) "$([guid]::NewGuid().ToString('N')).json"
+    $releaseProvenancePath = Join-Path ([IO.Path]::GetTempPath()) "$([guid]::NewGuid().ToString('N')).json"
     try {
-        $releaseProvenance | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $provenancePath -Encoding utf8
-        $provenanceHash = (Get-FileHash -LiteralPath $provenancePath -Algorithm SHA256).Hash.ToLowerInvariant()
-        Publish-GitHubReleaseAsset -GitHubRelease $githubRelease -Name $provenanceAsset -Path $provenancePath -Sha256 $provenanceHash -Headers $headers -Repository $Repository -Label "$($release.component) release provenance" -ContentType 'application/json'
+        $releaseProvenance | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $releaseProvenancePath -Encoding utf8
+        $provenanceHash = (Get-FileHash -LiteralPath $releaseProvenancePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Publish-GitHubReleaseAsset -GitHubRelease $githubRelease -Name $provenanceAsset -Path $releaseProvenancePath -Sha256 $provenanceHash -Headers $headers -Repository $Repository -Label "$($release.component) release provenance" -ContentType 'application/json'
     } finally {
-        Remove-Item -LiteralPath $provenancePath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $releaseProvenancePath -Force -ErrorAction SilentlyContinue
     }
 }

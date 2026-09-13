@@ -225,6 +225,45 @@ Describe 'Artifact promotion planning' {
     }
 }
 
+Describe 'GitHub release asset publication' {
+    It 'resolves every component artifact from a downloaded release bundle' {
+        $bundlePath = Join-Path $TestDrive 'downloaded-release'
+        $artifactPath = Join-Path $bundlePath 'artifacts'
+        $webPath = Join-Path $artifactPath 'web/web-v1.0.0-beta.1.zip'
+        $desktopPath = Join-Path $artifactPath 'desktop/desktop-v1.0.0-beta.1.zip'
+        New-Item -ItemType Directory -Force -Path (Split-Path $webPath), (Split-Path $desktopPath) | Out-Null
+        Set-Content -LiteralPath $webPath -Value 'web artifact'
+        Set-Content -LiteralPath $desktopPath -Value 'desktop artifact'
+        $provenancePath = Join-Path $artifactPath 'provenance.json'
+        $planPath = Join-Path $bundlePath 'release-plan.json'
+        $webHash = (Get-FileHash $webPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $desktopHash = (Get-FileHash $desktopPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $releasePlan = [pscustomobject]@{ releases = @(
+            [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0-beta.1'; channel = 'beta'; tag = 'web/v1.0.0-beta.1'; commit = 'abc123' },
+            [pscustomobject]@{ component = 'desktop'; semanticVersion = '1.0.0-beta.1'; channel = 'beta'; tag = 'desktop/v1.0.0-beta.1'; commit = 'abc123' }
+        ) }
+        [pscustomobject]@{
+            plan = $releasePlan
+            artifacts = @(
+                [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0-beta.1'; path = 'D:\original\artifacts\web\web-v1.0.0-beta.1.zip'; sha256 = $webHash; artifactType = 'zip' },
+                [pscustomobject]@{ component = 'desktop'; semanticVersion = '1.0.0-beta.1'; path = 'D:\original\artifacts\desktop\desktop-v1.0.0-beta.1.zip'; sha256 = $desktopHash; artifactType = 'zip' }
+            )
+        } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+        $releasePlan | ConvertTo-Json -Depth 12 | Set-Content $planPath
+
+        Mock Invoke-RestMethod { [pscustomobject]@{ id = 1; tag_name = 'test'; assets = @() } }
+        $oldRepository = $env:GITHUB_REPOSITORY; $oldToken = $env:GITHUB_TOKEN
+        try {
+            $env:GITHUB_REPOSITORY = 'example/repository'; $env:GITHUB_TOKEN = 'test-token'
+            & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseAssets.ps1" -PlanPath $planPath -ProvenancePath $provenancePath
+        } finally {
+            $env:GITHUB_REPOSITORY = $oldRepository; $env:GITHUB_TOKEN = $oldToken
+        }
+
+        Should -Invoke Invoke-RestMethod -Times 6 -Exactly
+    }
+}
+
 Describe 'Release packaging flow' {
     It 'creates a nonexistent output directory and writes empty provenance for an empty plan' {
         $planPath = Join-Path $TestDrive 'empty-plan.json'
