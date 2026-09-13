@@ -39,6 +39,8 @@ jobs:
     runs-on: self-hosted
     outputs:
       channel: ${{ steps.release-channel.outputs.channel }}
+      has_releases: ${{ steps.release-channel.outputs.has_releases }}
+      approval_summary: ${{ steps.release-channel.outputs.approval_summary }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,6 +90,20 @@ jobs:
         run: |
           $plan = Get-Content .\release-plan.json -Raw | ConvertFrom-Json
           "channel=$($plan.channel)" >> $env:GITHUB_OUTPUT
+          $hasReleases = if (@($plan.releases).Count -gt 0) { 'true' } else { 'false' }
+          "has_releases=$hasReleases" >> $env:GITHUB_OUTPUT
+          $approvalSummary = @($plan.releases | ForEach-Object { "$($_.component) $($_.tag)" }) -join ', '
+          "approval_summary=$approvalSummary" >> $env:GITHUB_OUTPUT
+          @(
+            '## Release approval summary'
+            ''
+            "Channel: ``$($plan.channel)``"
+            "Commit: ``$($plan.commit)``"
+            ''
+            '| Component | Version | Tag |'
+            '| --- | --- | --- |'
+            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Build and package
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
@@ -101,7 +117,9 @@ jobs:
           retention-days: 30
 
   create-tags:
+    name: "Approve tags and GitHub releases: ${{ needs.release.outputs.approval_summary }}"
     needs: release
+    if: needs.release.outputs.has_releases == 'true'
     runs-on: self-hosted
     environment: release-${{ needs.release.outputs.channel }}
     permissions:
@@ -132,7 +150,9 @@ jobs:
         run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\release-artifacts\release-plan.json -ProvenancePath .\release-artifacts\artifacts\provenance.json
 
   publish:
-    needs: create-tags
+    name: "Approve registry publication: ${{ needs.release.outputs.approval_summary }}"
+    needs: [release, create-tags]
+    if: needs.release.outputs.has_releases == 'true' && needs.create-tags.result == 'success'
     runs-on: self-hosted
     environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
     permissions:
