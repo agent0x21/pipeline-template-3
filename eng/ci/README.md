@@ -56,3 +56,5 @@ Registry publication is opt-in per component through `publishing.adapter`: `nuge
 Packaging creates generic ZIP files and `artifacts/provenance.json`. The explicit `New-ReleaseTags.ps1` step is the only operation that mutates Git. It is idempotent when the requested tag already points to the planned commit and fails safely on a conflicting tag.
 
 For legacy .NET components, set `type: legacy-dotnet-framework` and provide a PowerShell build command that discovers MSBuild (for example through `vswhere.exe`) and invokes it. Provider-specific workflows should pass normalized parameters to these scripts rather than embedding release logic.
+
+See [PROVIDER-MAPPINGS.md](PROVIDER-MAPPINGS.md) for Azure DevOps and Jenkins examples, normalized input mappings, approval boundaries, and artifact-transfer requirements.
