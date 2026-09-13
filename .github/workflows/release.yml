@@ -28,7 +28,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: "release-${{ github.ref }}"
@@ -37,6 +37,8 @@ concurrency:
 jobs:
   release:
     runs-on: self-hosted
+    outputs:
+      channel: ${{ steps.release-channel.outputs.channel }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -74,6 +76,12 @@ jobs:
           EXACT_VERSIONS: "${{ inputs.exact_versions || '{}' }}"
           RELEASE_ALL: "${{ inputs.release_all || false }}"
         run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
+      - name: Expose release channel
+        id: release-channel
+        shell: pwsh
+        run: |
+          $plan = Get-Content .\release-plan.json -Raw | ConvertFrom-Json
+          "channel=$($plan.channel)" >> $env:GITHUB_OUTPUT
       - name: Build and package
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
@@ -81,19 +89,39 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
-          path: artifacts/
+          path: |
+            artifacts/
+            release-plan.json
           retention-days: 30
+
+  create-tags:
+    needs: release
+    runs-on: self-hosted
+    environment: release-${{ needs.release.outputs.channel }}
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Download reviewed release plan
+        uses: actions/download-artifact@v7
+        with:
+          name: "release-${{ github.run_id }}"
+          path: release-artifacts
       - name: Create release tags
         shell: pwsh
-        run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-plan.json -Push
+        run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-artifacts\release-plan.json -Push
       - name: Publish GitHub release metadata
         shell: pwsh
         env:
           GITHUB_TOKEN: "${{ github.token }}"
-        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-plan.json
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-artifacts\release-plan.json
 
   publish:
-    needs: release
+    needs: create-tags
     runs-on: self-hosted
     environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
     permissions:
