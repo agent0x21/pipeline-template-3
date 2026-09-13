@@ -277,9 +277,10 @@ Describe 'Registry publication recovery' {
             @{ component = 'web'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('e' * 64) }
         ) } | ConvertTo-Json -Depth 8 | Set-Content $planPath
 
-        & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath | Out-Null
+        $resultJson = & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath
 
-        $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+        Test-Path $resultPath | Should -BeFalse
+        $result = ($resultJson -join [Environment]::NewLine) | ConvertFrom-Json
         $result.publications.Count | Should -Be 1
         $result.publications[0].component | Should -Be 'api'
         $result.publications[0].status | Should -Be 'planned'
