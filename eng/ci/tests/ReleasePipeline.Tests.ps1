@@ -31,3 +31,34 @@ Describe 'Release planning' {
         $plan.releases[0].artifactPath | Should -Be 'out/app'
     }
 }
+
+Describe 'Release packaging flow' {
+    It 'creates a nonexistent output directory and writes empty provenance for an empty plan' {
+        $planPath = Join-Path $TestDrive 'empty-plan.json'
+        $outputPath = Join-Path $TestDrive 'new-artifacts'
+        @{ branch = 'feature/test'; channel = $null; releases = @() } | ConvertTo-Json | Set-Content $planPath
+
+        & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -OutputDirectory $outputPath | Out-Null
+
+        Test-Path (Join-Path $outputPath 'provenance.json') | Should -BeTrue
+        (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 0
+    }
+
+    It 'packages a release into the requested output directory' {
+        $planPath = Join-Path $TestDrive 'release-plan.json'
+        $outputPath = Join-Path $TestDrive 'normal-artifacts'
+        $release = [pscustomobject]@{
+            component = 'web'; path = 'apps/web'; artifactPath = 'apps/web/dist'; semanticVersion = '0.1.0';
+            tag = 'web/v0.1.0'; channel = 'stable'; bump = 'minor'; bumpSource = 'configuration';
+            commit = 'abc123'; buildCommand = 'Write-Output ready'; testCommand = '';
+            componentType = 'node'; buildSolution = ''; buildMsbuildPath = ''; buildConfiguration = 'Release'
+        }
+        [pscustomobject]@{ branch = 'main'; channel = 'stable'; releases = @($release) } | ConvertTo-Json -Depth 10 | Set-Content $planPath
+
+        & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -OutputDirectory $outputPath | Out-Null
+
+        $zip = Get-ChildItem $outputPath -Filter '*.zip' -Recurse
+        $zip.Count | Should -Be 1
+        (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 1
+    }
+}
