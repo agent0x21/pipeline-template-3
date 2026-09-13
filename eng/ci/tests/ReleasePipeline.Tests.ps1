@@ -2,7 +2,6 @@ BeforeAll {
     Import-Module "$PSScriptRoot/../ReleasePipeline/ReleasePipeline.psd1" -Force
     . "$PSScriptRoot/Fixtures.ps1"
 }
-
 Describe 'Release configuration and channels' {
     It 'loads the sample configuration with minor as the default' {
         $config = Import-ReleaseConfig "$PSScriptRoot/../../../.releasepipeline.yml"
@@ -227,6 +226,68 @@ Describe 'Release packaging flow' {
         $zip.Count | Should -Be 1
         (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 1
     }
+
+    It 'executes container packaging through the manifest-imported packaging script' {
+        $root = Join-Path $TestDrive 'container-package'
+        $componentPath = Join-Path $root 'apps/api'
+        $shimPath = Join-Path $root 'bin'
+        $configPath = Join-Path $root 'release-config.json'
+        $planPath = Join-Path $root 'release-plan.json'
+        $outputPath = Join-Path $root 'artifacts'
+        New-Item -ItemType Directory -Force -Path $componentPath, $shimPath | Out-Null
+        Set-Content (Join-Path $componentPath 'Dockerfile') 'FROM scratch'
+        Set-Content (Join-Path $shimPath 'docker.ps1') @'
+param([string]$Operation, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+if ($Operation -eq 'save') {
+    $outputIndex = [Array]::IndexOf($Arguments, '--output')
+    if ($outputIndex -lt 0) { exit 1 }
+    Set-Content -LiteralPath $Arguments[$outputIndex + 1] -Value 'container image'
+}
+if ($Operation -eq 'build') {
+    Set-Content -LiteralPath (Join-Path (Split-Path $MyInvocation.MyCommand.Path) 'build-args.txt') -Value ($Arguments -join "`n")
+}
+exit 0
+'@
+        @{
+            versioning = @{ defaultBump = 'minor' }
+            branches = @{ main = @{ channel = 'stable' } }
+            components = @{ api = @{
+                path = 'apps/api'; tagPrefix = 'api'
+                build = @{ command = 'Write-Output ready' }
+                package = @{ path = 'apps/api' }
+                publishing = @{ adapter = 'container'; image = 'example.invalid/api'; dockerfile = 'apps/api/Dockerfile'; context = 'apps/api' }
+            } }
+        } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        [pscustomobject]@{
+            branch = 'main'; channel = 'stable'; releases = @([pscustomobject]@{
+                component = 'api'; path = 'apps/api'; artifactPath = 'apps/api'; semanticVersion = '0.1.0-beta.2'
+                tag = 'api/v0.1.0-beta.2'; channel = 'beta'; bump = 'minor'; bumpSource = 'configuration'
+                commit = 'abc123'; buildCommand = 'Write-Output ready'; testCommand = ''
+                componentType = 'modern-dotnet'; buildSolution = ''; buildMsbuildPath = ''; buildConfiguration = 'Release'
+            })
+        } | ConvertTo-Json -Depth 10 | Set-Content $planPath
+
+        $oldPath = $env:PATH
+        try {
+            $env:PATH = "$shimPath$([IO.Path]::PathSeparator)$oldPath"
+            Push-Location $root
+            & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -ConfigPath $configPath -OutputDirectory $outputPath | Out-Null
+        } finally {
+            Pop-Location
+            $env:PATH = $oldPath
+        }
+
+        @(Get-ChildItem $outputPath -Filter '*.zip' -Recurse).Count | Should -Be 1
+        @(Get-ChildItem $outputPath -Filter '*.container.tar' -Recurse).Count | Should -Be 1
+        (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 2
+        $buildArgs = Get-Content (Join-Path $shimPath 'build-args.txt')
+        $buildArgs | Should -Contain 'DOTNET_Version=0.1.0-beta.2'
+        $buildArgs | Should -Contain 'DOTNET_VersionPrefix=0.1.0'
+        $buildArgs | Should -Contain 'DOTNET_VersionSuffix=beta.2'
+        $buildArgs | Should -Contain 'DOTNET_AssemblyVersion=0.1.0.0'
+        $buildArgs | Should -Contain 'DOTNET_FileVersion=0.1.0.0'
+        $buildArgs | Should -Contain 'DOTNET_InformationalVersion=0.1.0-beta.2'
+    }
 }
 
 Describe 'Registry publication planning' {
@@ -277,11 +338,49 @@ Describe 'Registry publication recovery' {
             @{ component = 'web'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('e' * 64) }
         ) } | ConvertTo-Json -Depth 8 | Set-Content $planPath
 
-        & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath | Out-Null
+        $resultJson = & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath
 
-        $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+        Test-Path $resultPath | Should -BeFalse
+        $result = ($resultJson -join [Environment]::NewLine) | ConvertFrom-Json
         $result.publications.Count | Should -Be 1
         $result.publications[0].component | Should -Be 'api'
         $result.publications[0].status | Should -Be 'planned'
+    }
+}
+
+Describe 'Registry publication planning' {
+    It 'keeps the source digest while assigning the promoted target version' {
+        $componentPath = Join-Path $TestDrive 'apps/app'
+        New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
+        $configPath = Join-Path $TestDrive 'release-config.json'
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        $provenancePath = Join-Path $TestDrive 'provenance.json'
+        @{ plan = @{ releases = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; channel = 'beta'; commit = 'abc123' }) }; artifacts = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; path = 'app.tgz'; sha256 = ('c' * 64) }) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+        $promotionPath = Join-Path $TestDrive 'promotion-plan.json'
+        @{ promotions = @(@{ component = 'app'; semanticVersion = '2.1.0-rc.1'; sourceSemanticVersion = '2.1.0-beta.1'; channel = 'rc'; commit = 'abc123' }) } | ConvertTo-Json -Depth 12 | Set-Content $promotionPath
+
+        $planPath = Join-Path $TestDrive 'registry-plan.json'
+        & "$PSScriptRoot/../New-RegistryPublicationPlan.ps1" -ProvenancePath $provenancePath -PromotionPlanPath $promotionPath -ConfigPath $configPath -OutputPath $planPath | Out-Null
+        $plan = Get-Content $planPath -Raw | ConvertFrom-Json
+        $plan.publications[0].semanticVersion | Should -Be '2.1.0-rc.1'
+        $plan.publications[0].sha256 | Should -Be ('c' * 64)
+    }
+
+    It 'selects the immutable container image artifact for a container publication' {
+        $componentPath = Join-Path $TestDrive 'apps/api'
+        New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
+        $configPath = Join-Path $TestDrive 'container-release-config.json'
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        $provenancePath = Join-Path $TestDrive 'container-provenance.json'
+        @{ plan = @{ releases = @(@{ component = 'api'; semanticVersion = '1.2.0'; channel = 'stable'; commit = 'abc123' }) }; artifacts = @(
+            @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.zip'; sha256 = ('a' * 64); artifactType = 'zip' },
+            @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.container.tar'; sha256 = ('b' * 64); artifactType = 'container-image' }
+        ) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+
+        $planPath = Join-Path $TestDrive 'container-registry-plan.json'
+        & "$PSScriptRoot/../New-RegistryPublicationPlan.ps1" -ProvenancePath $provenancePath -ConfigPath $configPath -OutputPath $planPath | Out-Null
+        $plan = Get-Content $planPath -Raw | ConvertFrom-Json
+        $plan.publications[0].artifactPath | Should -Be 'api.container.tar'
+        $plan.publications[0].sha256 | Should -Be ('b' * 64)
     }
 }

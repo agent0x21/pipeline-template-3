@@ -378,7 +378,23 @@ function Invoke-ComponentContainerPackage {
     if (-not (Test-Path -LiteralPath $dockerfile -PathType Leaf)) { throw "Dockerfile not found for '$($Release.component)': $dockerfile" }
     if (-not (Test-Path -LiteralPath $context -PathType Container)) { throw "Docker context not found for '$($Release.component)': $context" }
     $tag = "${image}:$($Release.semanticVersion)"
-    & docker build '--file' $dockerfile '--tag' $tag '--label' "org.opencontainers.image.version=$($Release.semanticVersion)" '--label' "org.opencontainers.image.revision=$($Release.commit)" $context 2>&1 | Out-Host
+    $version = ConvertFrom-SemVer ([string]$Release.semanticVersion)
+    $versionPrefix = "$($version.Major).$($version.Minor).$($version.Patch)"
+    $versionSuffix = if ($version.Channel) { "$($version.Channel).$($version.Sequence)" } else { '' }
+    $assemblyVersion = "$versionPrefix.0"
+    $dockerBuildArguments = @(
+        'build', '--file', $dockerfile, '--tag', $tag,
+        '--label', "org.opencontainers.image.version=$($Release.semanticVersion)",
+        '--label', "org.opencontainers.image.revision=$($Release.commit)",
+        '--build-arg', "DOTNET_Version=$($Release.semanticVersion)",
+        '--build-arg', "DOTNET_VersionPrefix=$versionPrefix",
+        '--build-arg', "DOTNET_VersionSuffix=$versionSuffix",
+        '--build-arg', "DOTNET_AssemblyVersion=$assemblyVersion",
+        '--build-arg', "DOTNET_FileVersion=$assemblyVersion",
+        '--build-arg', "DOTNET_InformationalVersion=$($Release.semanticVersion)",
+        $context
+    )
+    & docker @dockerBuildArguments 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Docker build failed for '$($Release.component)'." }
     $componentOutput = Join-Path $OutputDirectory $Release.component
     New-Item -ItemType Directory -Force -Path $componentOutput | Out-Null
