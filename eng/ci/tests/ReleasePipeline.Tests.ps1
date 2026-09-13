@@ -96,6 +96,23 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
     }
 
+    It 'detects component changes across the complete promoted branch range' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        try {
+            # The component change is in the first commit of the promoted range;
+            # the tip commit is deliberately outside every component path.
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'second promoted change'
+            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Second promoted change') | Out-Null
+
+            Push-Location $fixture.Repository
+            $plan = New-ReleasePlan -Config $fixture.Config -Branch qa -BaseRef $fixture.InitialCommit
+
+            $plan.releases.Count | Should -Be 1
+            $plan.releases[0].component | Should -Be 'app'
+        } finally { Pop-Location }
+    }
+
     It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
         $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun

@@ -75,7 +75,13 @@ jobs:
           COMPONENT_OVERRIDES: "${{ inputs.component_overrides || '{}' }}"
           EXACT_VERSIONS: "${{ inputs.exact_versions || '{}' }}"
           RELEASE_ALL: "${{ inputs.release_all || false }}"
-        run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
+          PUSH_BASE_REF: "${{ github.event.before }}"
+        run: |
+          # A push can advance a branch by more than one commit. Compare the full
+          # pushed range so promotions such as dev -> qa -> main include every
+          # changed component, not only the commit immediately before HEAD.
+          $baseRef = if ($env:PUSH_BASE_REF -and $env:PUSH_BASE_REF -notmatch '^0+$') { $env:PUSH_BASE_REF } else { 'HEAD~1' }
+          .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -BaseRef $baseRef -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
       - name: Expose release channel
         id: release-channel
         shell: pwsh
