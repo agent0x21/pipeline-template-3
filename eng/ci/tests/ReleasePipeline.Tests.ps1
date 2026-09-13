@@ -228,3 +228,22 @@ Describe 'Release packaging flow' {
         (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 1
     }
 }
+
+Describe 'Registry publication planning' {
+    It 'keeps the source digest while assigning the promoted target version' {
+        $componentPath = Join-Path $TestDrive 'apps/app'
+        New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
+        $configPath = Join-Path $TestDrive 'release-config.json'
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        $provenancePath = Join-Path $TestDrive 'provenance.json'
+        @{ plan = @{ releases = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; channel = 'beta'; commit = 'abc123' }) }; artifacts = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; path = 'app.tgz'; sha256 = ('c' * 64) }) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+        $promotionPath = Join-Path $TestDrive 'promotion-plan.json'
+        @{ promotions = @(@{ component = 'app'; semanticVersion = '2.1.0-rc.1'; sourceSemanticVersion = '2.1.0-beta.1'; channel = 'rc'; commit = 'abc123' }) } | ConvertTo-Json -Depth 12 | Set-Content $promotionPath
+
+        $planPath = Join-Path $TestDrive 'registry-plan.json'
+        & "$PSScriptRoot/../New-RegistryPublicationPlan.ps1" -ProvenancePath $provenancePath -PromotionPlanPath $promotionPath -ConfigPath $configPath -OutputPath $planPath | Out-Null
+        $plan = Get-Content $planPath -Raw | ConvertFrom-Json
+        $plan.publications[0].semanticVersion | Should -Be '2.1.0-rc.1'
+        $plan.publications[0].sha256 | Should -Be ('c' * 64)
+    }
+}

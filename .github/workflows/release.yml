@@ -91,3 +91,32 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ github.token }}"
         run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-plan.json
+
+  publish:
+    needs: release
+    runs-on: self-hosted
+    environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Download immutable release artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: "release-${{ github.run_id }}"
+          path: release-artifacts
+      - name: Publish registry artifacts
+        shell: pwsh
+        run: |
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\release-artifacts\provenance.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
+      - name: Upload registry publication record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "registry-publication-${{ github.run_id }}"
+          path: registry-publication.json
+          retention-days: 30
