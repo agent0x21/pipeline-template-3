@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Review the release plan and create initial component tags only after approval.
+**Current focus:** Add migration guidance for repository-global tags and bootstrap versions.
 
 Completed foundation:
 
@@ -47,7 +47,7 @@ Completed foundation:
 
 ### 4. Provider portability and adoption
 
-- [ ] Document Azure DevOps/Jenkins input mappings to the normalized PowerShell interface.
+- [x] Document Azure DevOps/Jenkins input mappings to the normalized PowerShell interface.
 - [ ] Add migration guidance for repository-global tags and bootstrap versions.
 - [ ] Provide reusable templates for single applications and polyglot monorepos.
 - [ ] Define recovery for partial component releases and publication/deployment retries.
