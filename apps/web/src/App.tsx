@@ -18,7 +18,7 @@ function App() {
       setForecast(await response.json());
       setStatus("Connected to the API");
     } catch {
-      setStatus("API unavailable — start the API with pnpm start-api");
+      setStatus("API unavailable — start the API with pnpm start-api...");
       setForecast([]);
     } finally {
       setLoading(false);
