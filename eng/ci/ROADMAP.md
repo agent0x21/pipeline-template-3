@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Add migration guidance for repository-global tags and bootstrap versions.
+**Current focus:** Provide reusable templates for single applications and polyglot monorepos.
 
 Completed foundation:
 
@@ -48,7 +48,7 @@ Completed foundation:
 ### 4. Provider portability and adoption
 
 - [x] Document Azure DevOps/Jenkins input mappings to the normalized PowerShell interface.
-- [ ] Add migration guidance for repository-global tags and bootstrap versions.
+- [x] Add migration guidance for repository-global tags and bootstrap versions.
 - [ ] Provide reusable templates for single applications and polyglot monorepos.
 - [ ] Define recovery for partial component releases and publication/deployment retries.
 
