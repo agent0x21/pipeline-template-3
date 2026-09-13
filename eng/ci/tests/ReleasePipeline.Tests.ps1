@@ -55,7 +55,17 @@ Describe 'Release packaging flow' {
         }
         [pscustomobject]@{ branch = 'main'; channel = 'stable'; releases = @($release) } | ConvertTo-Json -Depth 10 | Set-Content $planPath
 
-        & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -OutputDirectory $outputPath | Out-Null
+        $artifactPath = Join-Path $TestDrive 'apps/web/dist'
+        try {
+            Push-Location $TestDrive
+            New-Item -ItemType Directory -Path $artifactPath -Force | Out-Null
+            Set-Content (Join-Path $artifactPath 'index.html') 'ready'
+
+            & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -OutputDirectory $outputPath | Out-Null
+        } finally {
+            Pop-Location
+            Remove-Item -LiteralPath $artifactPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
 
         $zip = Get-ChildItem $outputPath -Filter '*.zip' -Recurse
         $zip.Count | Should -Be 1
