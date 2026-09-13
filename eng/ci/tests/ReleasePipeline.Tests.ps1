@@ -113,6 +113,27 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
     }
 
+    It 'finds the immutable beta source for an unambiguous branch promotion' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'promote the beta release'
+            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Promote candidate') | Out-Null
+
+            Push-Location $fixture.Repository
+            & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath | Out-Null
+            $sources = Get-Content $outputPath -Raw | ConvertFrom-Json
+
+            $sources.sourceChannel | Should -Be 'beta'
+            $sources.sources.Count | Should -Be 1
+            $sources.sources[0].tag | Should -Be 'app/v1.3.0-beta.1'
+        } finally { Pop-Location }
+    }
+
     It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
         $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun

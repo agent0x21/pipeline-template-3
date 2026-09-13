@@ -21,6 +21,31 @@ function Resolve-DownloadedArtifactPath {
     return $matches[0].FullName
 }
 
+function Publish-GitHubReleaseAsset {
+    param(
+        [Parameter(Mandatory)]$GitHubRelease,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][hashtable]$Headers,
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$ContentType
+    )
+    $existing = @($GitHubRelease.assets | Where-Object { $_.name -eq $Name })
+    if ($existing.Count -gt 1) { throw "GitHub release '$($GitHubRelease.tag_name)' contains multiple assets named '$Name'." }
+    if ($existing.Count -eq 1) {
+        if ([string]$existing[0].digest -eq "sha256:$Sha256") {
+            Write-Host "GitHub release asset already exists for $($GitHubRelease.tag_name): $Name"
+            return
+        }
+        throw "GitHub release asset '$Name' already exists for '$($GitHubRelease.tag_name)' with a different or unavailable SHA-256 digest."
+    }
+    $uploadUri = "https://uploads.github.com/repos/$Repository/releases/$($GitHubRelease.id)/assets?name=$([uri]::EscapeDataString($Name))&label=$([uri]::EscapeDataString($Label))"
+    Invoke-RestMethod -Method Post -Uri $uploadUri -Headers $Headers -ContentType $ContentType -InFile $Path | Out-Null
+    Write-Host "Uploaded GitHub release asset for $($GitHubRelease.tag_name): $Name"
+}
+
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
 $provenance = Get-Content -LiteralPath $ProvenancePath -Raw | ConvertFrom-Json
 $releases = @($plan.releases)
@@ -31,16 +56,8 @@ $headers = @{ Accept = 'application/vnd.github+json'; Authorization = "Bearer $T
 $releaseBaseUri = "https://api.github.com/repos/$Repository/releases"
 foreach ($release in $releases) {
     $sourceVersion = if ($release.PSObject.Properties.Name -contains 'sourceSemanticVersion') { [string]$release.sourceSemanticVersion } else { [string]$release.semanticVersion }
-    $artifact = @($provenance.artifacts | Where-Object {
-        $_.component -eq $release.component -and $_.semanticVersion -eq $sourceVersion -and
-        (($_.PSObject.Properties.Name -notcontains 'artifactType') -or $_.artifactType -eq 'zip')
-    })
-    if ($artifact.Count -ne 1) { throw "Provenance must contain exactly one artifact for '$($release.component)' version '$sourceVersion'." }
-    $expectedHash = ([string]$artifact[0].sha256).ToLowerInvariant()
-    if ($expectedHash -notmatch '^[a-f0-9]{64}$') { throw "Artifact digest for '$($release.component)' is not a SHA-256 value." }
-    $artifactPath = Resolve-DownloadedArtifactPath -RecordedPath ([string]$artifact[0].path) -SourceProvenancePath $ProvenancePath
-    $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) { throw "Artifact digest mismatch for '$artifactPath'. Expected $expectedHash, got $actualHash." }
+    $artifacts = @($provenance.artifacts | Where-Object { $_.component -eq $release.component -and $_.semanticVersion -eq $sourceVersion })
+    if ($artifacts.Count -eq 0) { throw "Provenance does not contain artifacts for '$($release.component)' version '$sourceVersion'." }
 
     $tagUri = [uri]::EscapeDataString([string]$release.tag)
     try {
@@ -51,19 +68,26 @@ foreach ($release in $releases) {
         throw
     }
 
-    $assetName = "$($release.component)-v$($release.semanticVersion).zip"
-    $existing = @($githubRelease.assets | Where-Object { $_.name -eq $assetName })
-    if ($existing.Count -gt 1) { throw "GitHub release '$($release.tag)' contains multiple assets named '$assetName'." }
-    if ($existing.Count -eq 1) {
-        $existingDigest = [string]$existing[0].digest
-        if ($existingDigest -eq "sha256:$expectedHash") {
-            Write-Host "GitHub release asset already exists for $($release.tag): $assetName"
-            continue
-        }
-        throw "GitHub release asset '$assetName' already exists for '$($release.tag)' with a different or unavailable SHA-256 digest."
+    $releaseArtifacts = foreach ($artifact in $artifacts) {
+        $expectedHash = ([string]$artifact.sha256).ToLowerInvariant()
+        if ($expectedHash -notmatch '^[a-f0-9]{64}$') { throw "Artifact digest for '$($release.component)' is not a SHA-256 value." }
+        $artifactPath = Resolve-DownloadedArtifactPath -RecordedPath ([string]$artifact.path) -SourceProvenancePath $ProvenancePath
+        $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) { throw "Artifact digest mismatch for '$artifactPath'. Expected $expectedHash, got $actualHash." }
+        $artifactType = if ($artifact.PSObject.Properties.Name -contains 'artifactType') { [string]$artifact.artifactType } else { 'zip' }
+        $suffix = if ($artifactType -eq 'container-image') { '.container.tar' } elseif ($artifactType -eq 'zip') { '.zip' } else { throw "Unsupported GitHub release artifact type '$artifactType'." }
+        $assetName = "$($release.component)-v$($release.semanticVersion)$suffix"
+        Publish-GitHubReleaseAsset -GitHubRelease $githubRelease -Name $assetName -Path $artifactPath -Sha256 $expectedHash -Headers $headers -Repository $Repository -Label "$($release.component) $artifactType" -ContentType 'application/octet-stream'
+        [pscustomobject]@{ path = $assetName; sha256 = $expectedHash; component = $release.component; semanticVersion = $release.semanticVersion; artifactType = $artifactType }
     }
-
-    $uploadUri = "https://uploads.github.com/repos/$Repository/releases/$($githubRelease.id)/assets?name=$([uri]::EscapeDataString($assetName))&label=$([uri]::EscapeDataString("$($release.component) deployable ZIP"))"
-    Invoke-RestMethod -Method Post -Uri $uploadUri -Headers $headers -ContentType 'application/zip' -InFile $artifactPath | Out-Null
-    Write-Host "Uploaded GitHub release asset for $($release.tag): $assetName"
+    $releaseProvenance = [pscustomobject]@{ plan = [pscustomobject]@{ releases = @($release) }; artifacts = @($releaseArtifacts) }
+    $provenanceAsset = "$($release.component)-v$($release.semanticVersion).provenance.json"
+    $provenancePath = Join-Path ([IO.Path]::GetTempPath()) "$([guid]::NewGuid().ToString('N')).json"
+    try {
+        $releaseProvenance | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $provenancePath -Encoding utf8
+        $provenanceHash = (Get-FileHash -LiteralPath $provenancePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Publish-GitHubReleaseAsset -GitHubRelease $githubRelease -Name $provenanceAsset -Path $provenancePath -Sha256 $provenanceHash -Headers $headers -Repository $Repository -Label "$($release.component) release provenance" -ContentType 'application/json'
+    } finally {
+        Remove-Item -LiteralPath $provenancePath -Force -ErrorAction SilentlyContinue
+    }
 }

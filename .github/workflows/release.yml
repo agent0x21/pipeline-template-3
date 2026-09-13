@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [dev, qa, main]
+    branches: [dev]
   workflow_dispatch:
     inputs:
       version_bump:
