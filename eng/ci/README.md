@@ -9,7 +9,7 @@ Install the YAML parser and the pinned Pester test dependency once, then plan an
 ```powershell
 Install-Module powershell-yaml -Scope CurrentUser
 Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser
-pwsh ./eng/ci/New-ReleasePlan.ps1 -Branch develop
+pwsh ./eng/ci/New-ReleasePlan.ps1 -Branch dev
 pwsh ./eng/ci/Invoke-ReleasePackage.ps1 -PlanPath ./release-plan.json
 ```
 

@@ -21,7 +21,7 @@ function New-ReleaseFixtureRepository {
     if ($Scenario -eq 'bootstrap') {
         return @{ Repository = $repository; InitialCommit = $initialCommit; Head = $initialCommit; Config = @{
             versioning = @{ defaultBump = 'minor' }
-            branches = @{ main = @{ channel = 'stable' }; develop = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
+            branches = @{ main = @{ channel = 'stable' }; dev = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
             components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } }
         } }
     }
@@ -48,7 +48,7 @@ function New-ReleaseFixtureRepository {
 
     @{ Repository = $repository; InitialCommit = $initialCommit; Head = $head; Config = @{
         versioning = @{ defaultBump = 'minor' }
-        branches = @{ main = @{ channel = 'stable' }; develop = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
+        branches = @{ main = @{ channel = 'stable' }; dev = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
         components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } }
     } }
 }
