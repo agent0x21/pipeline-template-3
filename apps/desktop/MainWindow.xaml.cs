@@ -19,6 +19,7 @@ public partial class MainWindow : Window
         await RefreshApiAsync();
     }
 
+// Test note
     private async void RefreshApi_Click(object sender, RoutedEventArgs e)
     {
         await RefreshApiAsync();
