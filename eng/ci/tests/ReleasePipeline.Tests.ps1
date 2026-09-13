@@ -110,6 +110,29 @@ Describe 'Git release fixtures' {
             (New-ReleaseTag -Release $idempotent).status | Should -Be 'already-exists'
         } finally { Pop-Location }
     }
+
+    It 'reuses a remotely claimed matching tag after an atomic push race' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $remote = Join-Path $TestDrive 'remote.git'
+        $publisher = Join-Path $TestDrive 'publisher'
+        & git init --bare $remote | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the fixture remote.' }
+        try {
+            Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('push','origin','HEAD:refs/heads/main') | Out-Null
+            & git clone $remote $publisher | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not clone the fixture remote.' }
+            Invoke-FixtureGit $publisher @('config','user.email','release-fixture@example.invalid') | Out-Null
+            Invoke-FixtureGit $publisher @('config','user.name','Release Fixture') | Out-Null
+            Invoke-FixtureGit $publisher @('tag','-a','app/v1.3.0-beta.1',$fixture.Head,'-m','Concurrent release') | Out-Null
+            Invoke-FixtureGit $publisher @('push','origin','app/v1.3.0-beta.1') | Out-Null
+
+            Push-Location $fixture.Repository
+            $release = [pscustomobject]@{ tag = 'app/v1.3.0-beta.1'; component = 'app'; semanticVersion = '1.3.0-beta.1'; commit = $fixture.Head }
+            (New-ReleaseTag -Release $release -Push -PushAttempts 2).status | Should -Be 'already-exists'
+            @(Invoke-FixtureGit $fixture.Repository @('tag','--list','app/v1.3.0-beta.1')).Count | Should -Be 0
+        } finally { Pop-Location }
+    }
 }
 
 Describe 'Release packaging flow' {

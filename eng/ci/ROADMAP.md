@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Validate the first release in GitHub Actions and finish concurrency/legacy-build hardening before adding publishing and promotion.
+**Current focus:** Validate the first release in GitHub Actions, exercise a real legacy .NET Framework build, then add artifact promotion.
 
 Completed foundation:
 
@@ -32,13 +32,13 @@ Completed foundation:
 ### 2. Harden the release engine
 
 - [x] Add fixture repositories for stable tags, prereleases, legacy tags, reruns, and tag conflicts.
-- [ ] Expand Pester coverage for exact versions, prerelease numbering, dependency traversal, and concurrency retries.
+- [x] Expand Pester coverage for exact versions, prerelease numbering, dependency traversal, and concurrency retries.
 - [x] Validate configuration schemas and reject cycles, missing dependencies, invalid paths, and duplicate tag prefixes.
 - [ ] Test a real legacy .NET Framework solution through `vswhere.exe` and MSBuild.
 
 ### 3. Publish and promote immutable artifacts
 
-- [ ] Add GitHub artifact retention and release metadata publication.
+- [x] Add GitHub artifact retention and release metadata publication.
 - [ ] Add registry adapters for NuGet, npm, and container images where required.
 - [ ] Model beta → RC → stable promotion without rebuilding artifacts.
 - [ ] Add environment approvals, least-privilege permissions, and OIDC-ready publishing hooks.

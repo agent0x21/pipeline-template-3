@@ -8,7 +8,7 @@ function Invoke-FixtureGit {
 function New-ReleaseFixtureRepository {
     param([Parameter(Mandatory)][string]$Root, [ValidateSet('stable','prerelease','legacy','rerun','conflict')][string]$Scenario = 'stable')
 
-    $repository = Join-Path $Root $Scenario
+    $repository = Join-Path $Root "$Scenario-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path (Join-Path $repository 'apps/app') | Out-Null
     Set-Content -LiteralPath (Join-Path $repository 'apps/app/source.txt') -Value 'initial'
     Invoke-FixtureGit $repository @('init') | Out-Null

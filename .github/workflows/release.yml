@@ -76,6 +76,12 @@ jobs:
         with:
           name: "release-${{ github.run_id }}"
           path: artifacts/
+          retention-days: 30
       - name: Create release tags
         shell: pwsh
         run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-plan.json -Push
+      - name: Publish GitHub release metadata
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-plan.json

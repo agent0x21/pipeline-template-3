@@ -297,8 +297,36 @@ function Invoke-ComponentBuild {
     throw "No build adapter is configured for component '$($Release.component)' of type '$($Release.componentType)'."
 }
 
+function Get-RemoteTagCommit {
+    param([Parameter(Mandatory)][string]$Tag)
+    $safeDirectory = (Get-Location).Path
+    $output = & git '-c' "safe.directory=$safeDirectory" ls-remote --tags origin "refs/tags/$Tag" "refs/tags/$Tag^{}" 2>&1
+    if ($LASTEXITCODE -ne 0) { return $null }
+    $entries = foreach ($line in $output) {
+        $parts = ([string]$line -split '\s+', 2)
+        if ($parts.Count -eq 2) { [pscustomobject]@{ Sha = $parts[0]; Reference = $parts[1] } }
+    }
+    $peeled = @($entries | Where-Object { $_.Reference -eq "refs/tags/$Tag^{}" } | Select-Object -First 1)
+    if ($peeled) { return $peeled.Sha }
+    $direct = @($entries | Where-Object { $_.Reference -eq "refs/tags/$Tag" } | Select-Object -First 1)
+    if ($direct) { return $direct.Sha }
+    return $null
+}
+
+function Remove-CreatedReleaseTag {
+    param([Parameter(Mandatory)][pscustomobject]$Release)
+    $localCommit = Get-Git @('rev-list','-n','1',$Release.tag) | Select-Object -First 1
+    if ($localCommit -ne $Release.commit) { throw "Refusing to remove release tag '$($Release.tag)' because it no longer points to the planned commit." }
+    Get-Git @('tag','-d',$Release.tag) | Out-Null
+}
+
 function New-ReleaseTag {
-    [CmdletBinding()] param([Parameter(Mandatory)][pscustomobject]$Release, [switch]$Push)
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Release,
+        [switch]$Push,
+        [ValidateRange(1, 10)][int]$PushAttempts = 3
+    )
     $existing = @(Get-Git @('tag','--list',$Release.tag))
     if ($existing) {
         $tagCommit = Get-Git @('rev-list','-n','1',$Release.tag) | Select-Object -First 1
@@ -307,7 +335,23 @@ function New-ReleaseTag {
     }
     & git tag -a $Release.tag $Release.commit -m "Release $($Release.component) $($Release.semanticVersion)"
     if ($LASTEXITCODE -ne 0) { throw "Unable to create tag '$($Release.tag)'." }
-    if ($Push) { Get-Git @('push','--atomic','origin',$Release.tag) | Out-Null }
+    if ($Push) {
+        $safeDirectory = (Get-Location).Path
+        for ($attempt = 1; $attempt -le $PushAttempts; $attempt++) {
+            $pushOutput = & git '-c' "safe.directory=$safeDirectory" push --atomic origin $Release.tag 2>&1
+            if ($LASTEXITCODE -eq 0) { return [pscustomobject]@{ tag = $Release.tag; status = 'created' } }
+
+            $remoteCommit = Get-RemoteTagCommit -Tag $Release.tag
+            if ($remoteCommit) {
+                Remove-CreatedReleaseTag -Release $Release
+                if ($remoteCommit -eq $Release.commit) { return [pscustomobject]@{ tag = $Release.tag; status = 'already-exists' } }
+                throw "Tag '$($Release.tag)' was created on another commit while it was being pushed. Recreate the release plan before retrying."
+            }
+            if ($attempt -lt $PushAttempts) { Start-Sleep -Milliseconds (250 * $attempt) }
+        }
+        Remove-CreatedReleaseTag -Release $Release
+        throw "Unable to push tag '$($Release.tag)' after $PushAttempts attempts: $($pushOutput -join ' ')"
+    }
     [pscustomobject]@{ tag = $Release.tag; status = 'created' }
 }
 
