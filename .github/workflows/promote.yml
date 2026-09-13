@@ -44,7 +44,7 @@ jobs:
           path: source-artifacts
       - name: Plan promotion
         shell: pwsh
-        run: .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath .\source-artifacts\provenance.json -TargetChannel '${{ inputs.target_channel }}'
+        run: .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath .\source-artifacts\artifacts\provenance.json -TargetChannel '${{ inputs.target_channel }}'
       - name: Create promotion tags
         shell: pwsh
         run: .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
@@ -83,7 +83,7 @@ jobs:
       - name: Publish registry artifacts
         shell: pwsh
         run: |
-          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\source-artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
           .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
       - name: Upload registry publication record
         uses: actions/upload-artifact@v7
