@@ -34,13 +34,19 @@ $publications = foreach ($release in $targetReleases) {
     if ([string]$artifact[0].sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "Artifact digest for '$($release.component)' is not a SHA-256 value." }
     if (-not $endpoint -and $adapter -ne 'container') { throw "Publishing endpoint is required for '$($release.component)'." }
     if ($adapter -eq 'container' -and -not $image) { throw "Publishing image is required for '$($release.component)'." }
+    $artifactPath = [string]$artifact[0].path
+    if ($adapter -ne 'container' -and -not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+        $artifactName = Split-Path -Leaf $artifactPath
+        $localMatches = @(Get-ChildItem -LiteralPath (Split-Path -Parent $ProvenancePath) -Recurse -File -Filter $artifactName -ErrorAction SilentlyContinue)
+        if ($localMatches.Count -eq 1) { $artifactPath = $localMatches[0].FullName }
+    }
     [pscustomobject]@{
         component = [string]$release.component
         semanticVersion = [string]$release.semanticVersion
         channel = [string]$release.channel
         commit = [string]$release.commit
         adapter = $adapter
-        artifactPath = [string]$artifact[0].path
+        artifactPath = $artifactPath
         sha256 = ([string]$artifact[0].sha256).ToLowerInvariant()
         endpoint = if ($endpoint) { $endpoint } else { $null }
         package = $package

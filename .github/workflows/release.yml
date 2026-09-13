@@ -140,7 +140,7 @@ jobs:
       - name: Publish registry artifacts
         shell: pwsh
         run: |
-          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\release-artifacts\provenance.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\release-artifacts\artifacts\provenance.json -OutputPath .\registry-publication-plan.json
           .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
       - name: Upload registry publication record
         uses: actions/upload-artifact@v7
