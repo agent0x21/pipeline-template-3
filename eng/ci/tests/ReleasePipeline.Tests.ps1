@@ -227,6 +227,58 @@ Describe 'Release packaging flow' {
         $zip.Count | Should -Be 1
         (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 1
     }
+
+    It 'executes container packaging through the manifest-imported packaging script' {
+        $root = Join-Path $TestDrive 'container-package'
+        $componentPath = Join-Path $root 'apps/api'
+        $shimPath = Join-Path $root 'bin'
+        $configPath = Join-Path $root 'release-config.json'
+        $planPath = Join-Path $root 'release-plan.json'
+        $outputPath = Join-Path $root 'artifacts'
+        New-Item -ItemType Directory -Force -Path $componentPath, $shimPath | Out-Null
+        Set-Content (Join-Path $componentPath 'Dockerfile') 'FROM scratch'
+        Set-Content (Join-Path $shimPath 'docker.ps1') @'
+param([string]$Operation, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+if ($Operation -eq 'save') {
+    $outputIndex = [Array]::IndexOf($Arguments, '--output')
+    if ($outputIndex -lt 0) { exit 1 }
+    Set-Content -LiteralPath $Arguments[$outputIndex + 1] -Value 'container image'
+}
+exit 0
+'@
+        @{
+            versioning = @{ defaultBump = 'minor' }
+            branches = @{ main = @{ channel = 'stable' } }
+            components = @{ api = @{
+                path = 'apps/api'; tagPrefix = 'api'
+                build = @{ command = 'Write-Output ready' }
+                package = @{ path = 'apps/api' }
+                publishing = @{ adapter = 'container'; image = 'example.invalid/api'; dockerfile = 'apps/api/Dockerfile'; context = 'apps/api' }
+            } }
+        } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        [pscustomobject]@{
+            branch = 'main'; channel = 'stable'; releases = @([pscustomobject]@{
+                component = 'api'; path = 'apps/api'; artifactPath = 'apps/api'; semanticVersion = '1.0.0'
+                tag = 'api/v1.0.0'; channel = 'stable'; bump = 'minor'; bumpSource = 'configuration'
+                commit = 'abc123'; buildCommand = 'Write-Output ready'; testCommand = ''
+                componentType = 'modern-dotnet'; buildSolution = ''; buildMsbuildPath = ''; buildConfiguration = 'Release'
+            })
+        } | ConvertTo-Json -Depth 10 | Set-Content $planPath
+
+        $oldPath = $env:PATH
+        try {
+            $env:PATH = "$shimPath$([IO.Path]::PathSeparator)$oldPath"
+            Push-Location $root
+            & "$PSScriptRoot/../Invoke-ReleasePackage.ps1" -PlanPath $planPath -ConfigPath $configPath -OutputDirectory $outputPath | Out-Null
+        } finally {
+            Pop-Location
+            $env:PATH = $oldPath
+        }
+
+        @(Get-ChildItem $outputPath -Filter '*.zip' -Recurse).Count | Should -Be 1
+        @(Get-ChildItem $outputPath -Filter '*.container.tar' -Recurse).Count | Should -Be 1
+        (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 2
+    }
 }
 
 Describe 'Registry publication planning' {

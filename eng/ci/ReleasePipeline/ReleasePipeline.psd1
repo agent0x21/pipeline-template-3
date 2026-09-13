@@ -7,7 +7,7 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Import-ReleaseConfig', 'Get-ReleaseChannel', 'Get-ComponentVersion',
-        'Get-ChangedComponents', 'New-ReleasePlan', 'New-ArtifactPromotionPlan', 'Invoke-ComponentPackage', 'Invoke-ComponentBuild',
+        'Get-ChangedComponents', 'New-ReleasePlan', 'New-ArtifactPromotionPlan', 'Invoke-ComponentPackage', 'Invoke-ComponentContainerPackage', 'Invoke-ComponentBuild',
         'New-ReleaseTag'
     )
 }
