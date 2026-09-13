@@ -35,6 +35,18 @@ The GitHub Actions adapter retains workflow artifacts for 30 days and publishes 
 
 The release workflow uploads the generated plan with the tested artifacts, then pauses at the protected `release-beta`, `release-rc`, or `release-stable` environment before creating tags. Reviewers can inspect `release-plan.json` in the workflow artifact and approve the deployment from the Actions run page. Tag creation and GitHub release metadata use a separate least-privilege job with `contents: write`; the build/package job has read-only repository permissions.
 
+Configure the GitHub governance from an authenticated `gh` session. This is idempotent and does not accept or print a token:
+
+```powershell
+gh auth login
+pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1 `
+  -Repository 'OWNER/REPOSITORY' `
+  -Reviewer @('reviewer-user', 'my-org/release-managers') `
+  -PreventSelfReview
+```
+
+The script protects `dev`, `qa`, and `main` with pull-request reviews, stale-review dismissal, last-push approval, conversation resolution, and no force pushes/deletions. It creates or updates `release-beta`, `release-rc`, `release-stable`, `beta`, `rc`, and `stable` with the selected users/teams as required reviewers. Preview the API changes first with `-WhatIf`. On GitHub Free, required environment reviewers require a public repository; private repositories need a compatible paid plan.
+
 Promotion consumes an existing release artifact's `provenance.json`, validates its component/version/digest entries, and creates tags for the same commit without invoking a build. Only `beta -> rc` and `rc -> stable` are allowed. Use the **Promote Release** GitHub workflow with the source run ID; it downloads the retained source artifact and records the original artifact SHA-256 in `promotion-provenance.json`.
 
 Registry publication is opt-in per component through `publishing.adapter`: `nuget`, `npm`, or `container`. Generate a publication plan with `pnpm registry-plan -ProvenancePath ...`; for promotion, also pass `-PromotionPlanPath promotion-plan.json`. The plan carries the immutable source artifact digest while using the target RC/stable version, without copying credentials. `pnpm registry-publish` invokes `dotnet nuget push`, `npm publish --provenance`, or `docker push`. Authenticate those tools in the provider workflow using a short-lived/OIDC credential or a preconfigured credential helper; never put tokens in command-line arguments. The workflows publish only after their `beta`, `rc`, or `stable` environment approval and grant `id-token: write` only to the publication job.
