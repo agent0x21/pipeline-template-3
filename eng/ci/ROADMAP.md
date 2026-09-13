@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Add registry adapters and promotion environment approvals without weakening release permissions.
+**Current focus:** Review the release plan and create initial component tags only after approval.
 
 Completed foundation:
 
@@ -41,9 +41,9 @@ Completed foundation:
 ### 3. Publish and promote immutable artifacts
 
 - [x] Add GitHub artifact retention and release metadata publication.
-- [ ] Add registry adapters for NuGet, npm, and container images where required.
+- [x] Add registry adapters for NuGet, npm, and container images where required.
 - [x] Model beta → RC → stable promotion without rebuilding artifacts.
-- [ ] Add environment approvals, least-privilege permissions, and OIDC-ready publishing hooks.
+- [x] Add environment approvals, least-privilege permissions, and OIDC-ready publishing hooks.
 
 ### 4. Provider portability and adoption
 

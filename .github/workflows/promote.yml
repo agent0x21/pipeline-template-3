@@ -15,7 +15,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 concurrency:
   group: "promotion-${{ inputs.target_channel }}"
@@ -24,6 +24,9 @@ concurrency:
 jobs:
   promote:
     runs-on: self-hosted
+    permissions:
+      actions: read
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,6 +54,7 @@ jobs:
           name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
           path: |
             source-artifacts/
+            promotion-plan.json
             promotion-provenance.json
           retention-days: 30
       - name: Publish GitHub release metadata
@@ -58,3 +62,32 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ github.token }}"
         run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\promotion-plan.json
+
+  publish:
+    needs: promote
+    runs-on: self-hosted
+    environment: ${{ inputs.target_channel }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Download promotion record
+        uses: actions/download-artifact@v7
+        with:
+          name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
+          path: promotion-artifacts
+      - name: Publish registry artifacts
+        shell: pwsh
+        run: |
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\source-artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
+      - name: Upload registry publication record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "registry-publication-${{ github.run_id }}"
+          path: registry-publication.json
+          retention-days: 30
