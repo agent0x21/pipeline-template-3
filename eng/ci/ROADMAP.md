@@ -26,6 +26,8 @@ Completed foundation:
 
 - [x] Add `.release-output/`, `release-plan.json`, and test result files to `.gitignore`.
 - [x] Run `pnpm release-plan`, `pnpm test-ci`, and `pnpm release-package` on a clean checkout.
+- [x] Release changed components from a parentless bootstrap commit and support approved manual full releases.
+- [x] Enforce production/QA version floors so development and QA cannot create lower release tags.
 - [ ] Review the plan and create initial component tags only after approval.
 - [x] Run the GitHub workflow manually and verify Windows runner/tool checks.
 

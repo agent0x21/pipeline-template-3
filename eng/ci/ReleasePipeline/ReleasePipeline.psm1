@@ -141,10 +141,19 @@ function ConvertTo-SemVer([int]$Major, [int]$Minor, [int]$Patch, [string]$Channe
 function Get-ComponentVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable] $Component)
+    return Get-ComponentChannelVersion -Component $Component -Channel stable
+}
+
+function Get-ComponentChannelVersion {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable] $Component, [Parameter(Mandatory)][ValidateSet('stable','beta','rc')][string]$Channel)
     $prefix = [string]$Component.tagPrefix
     $versions = foreach ($tag in (Get-Git @('tag','--list',"$prefix/v*"))) {
         if ($tag -match "^$([regex]::Escape($prefix))/v(?<version>.+)$") {
-            try { $version = ConvertFrom-SemVer $Matches.version; if (-not $version.Channel) { $version } } catch { }
+            try {
+                $version = ConvertFrom-SemVer $Matches.version
+                if (($Channel -eq 'stable' -and -not $version.Channel) -or ($Channel -ne 'stable' -and $version.Channel -eq $Channel)) { $version }
+            } catch { }
         }
     }
     if (-not $versions) { return $null }
@@ -154,7 +163,17 @@ function Get-ComponentVersion {
 function Get-ChangedComponents {
     [CmdletBinding()]
     param([Parameter(Mandatory)][hashtable] $Config, [string] $BaseRef = 'HEAD~1', [string] $Commit = 'HEAD')
-    $paths = Get-Git @('diff','--name-only',"$BaseRef...$Commit")
+    $paths = if ($BaseRef -eq 'HEAD~1') {
+        $safeDirectory = (Get-Location).Path
+        & git '-c' "safe.directory=$safeDirectory" rev-parse --verify --quiet "$Commit^" *> $null
+        if ($LASTEXITCODE -eq 0) {
+            Get-Git @('diff','--name-only',"$BaseRef...$Commit")
+        } else {
+            Get-Git @('diff-tree','--root','--no-commit-id','--name-only','-r',$Commit)
+        }
+    } else {
+        Get-Git @('diff','--name-only',"$BaseRef...$Commit")
+    }
     $changed = [Collections.Generic.HashSet[string]]::new()
     foreach ($name in $Config.components.Keys) {
         $componentPath = ([string]$Config.components[$name].path).TrimEnd('/','\')
@@ -273,27 +292,33 @@ function New-ReleasePlan {
         [Parameter(Mandatory)][hashtable]$Config,
         [ValidateSet('major','minor','patch')][string]$VersionBump,
         [hashtable]$ComponentOverrides = @{}, [hashtable]$ExactVersions = @{},
-        [Parameter(Mandatory)][string]$Branch, [string]$BaseRef = 'HEAD~1', [string]$Commit = 'HEAD',
+        [Parameter(Mandatory)][string]$Branch, [string]$BaseRef = 'HEAD~1', [string]$Commit = 'HEAD', [switch]$ReleaseAll,
         [string]$CiRunId = '', [string]$Repository = ''
     )
     $channel = Get-ReleaseChannel $Config $Branch
     if (-not $channel) { return [pscustomobject]@{ generatedAt = [DateTime]::UtcNow.ToString('o'); commit = (Get-Git @('rev-parse',$Commit) | Select-Object -First 1); branch = $Branch; releases = @() } }
     $commitSha = Get-Git @('rev-parse',$Commit) | Select-Object -First 1
-    $names = Get-AffectedComponents $Config (Get-ChangedComponents $Config $BaseRef $Commit)
+    $changed = if ($ReleaseAll) { @($Config.components.Keys) } else { Get-ChangedComponents $Config $BaseRef $Commit }
+    $names = Get-AffectedComponents $Config $changed
     $releases = foreach ($name in $names) {
         $component = $Config.components[$name]; $current = Get-ComponentVersion $component
+        $versionFloor = $current
+        if ($channel -eq 'beta') {
+            $qaVersion = Get-ComponentChannelVersion -Component $component -Channel rc
+            if ($qaVersion -and (-not $versionFloor -or (Compare-CoreVersion $qaVersion $versionFloor) -gt 0)) { $versionFloor = $qaVersion }
+        }
         $bump = Resolve-Bump $name $Config $VersionBump $ComponentOverrides
         if ($bump.Type -notin @('major','minor','patch')) { throw "Invalid bump for '$name': $($bump.Type)" }
         $existingRelease = Get-ReleaseForCommit -Component $component -Commit $commitSha -Channel $channel
         $versionText = if ($existingRelease) { $existingRelease.Version.Text } elseif ($ExactVersions[$name]) { [string]$ExactVersions[$name] } else {
-            $base = if ($current) { $current } else { ConvertFrom-SemVer ([string]$(if ($component.ContainsKey('initialVersion')) { $component.initialVersion } else { '0.0.0' })) }
+            $base = if ($versionFloor) { $versionFloor } else { ConvertFrom-SemVer ([string]$(if ($component.ContainsKey('initialVersion')) { $component.initialVersion } else { '0.0.0' })) }
             $major = $base.Major; $minor = $base.Minor; $patch = $base.Patch
             if ($bump.Type -eq 'major') { $major++; $minor = 0; $patch = 0 } elseif ($bump.Type -eq 'minor') { $minor++; $patch = 0 } else { $patch++ }
             ConvertTo-SemVer $major $minor $patch '' 0
         }
         $parsed = ConvertFrom-SemVer $versionText
-        if (-not $existingRelease -and $current -and (Compare-CoreVersion $parsed $current) -le 0 -and -not $ExactVersions[$name]) { throw "Calculated version for '$name' is not newer than current version." }
-        if (-not $existingRelease -and $ExactVersions[$name] -and $current -and (Compare-CoreVersion $parsed $current) -le 0) { throw "Exact version for '$name' must be greater than current stable version." }
+        if (-not $existingRelease -and $versionFloor -and (Compare-CoreVersion $parsed $versionFloor) -le 0 -and -not $ExactVersions[$name]) { throw "Calculated version for '$name' is not newer than its channel version floor." }
+        if (-not $existingRelease -and $ExactVersions[$name] -and $versionFloor -and (Compare-CoreVersion $parsed $versionFloor) -le 0) { throw "Exact version for '$name' must be greater than its channel version floor." }
         $sequence = 0
         if (-not $existingRelease -and $channel -ne 'stable' -and -not ($ExactVersions[$name] -and $parsed.Channel)) {
             $tagPrefix = [string]$component.tagPrefix

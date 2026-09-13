@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: "{}"
+      release_all:
+        description: Release every configured component, including components without source changes
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -67,7 +72,8 @@ jobs:
           VERSION_BUMP: "${{ inputs.version_bump || 'minor' }}"
           COMPONENT_OVERRIDES: "${{ inputs.component_overrides || '{}' }}"
           EXACT_VERSIONS: "${{ inputs.exact_versions || '{}' }}"
-        run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS
+          RELEASE_ALL: "${{ inputs.release_all || false }}"
+        run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
       - name: Build and package
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json

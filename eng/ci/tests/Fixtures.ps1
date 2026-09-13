@@ -6,7 +6,7 @@ function Invoke-FixtureGit {
 }
 
 function New-ReleaseFixtureRepository {
-    param([Parameter(Mandatory)][string]$Root, [ValidateSet('stable','prerelease','legacy','rerun','conflict')][string]$Scenario = 'stable')
+    param([Parameter(Mandatory)][string]$Root, [ValidateSet('stable','prerelease','legacy','rerun','conflict','bootstrap')][string]$Scenario = 'stable')
 
     $repository = Join-Path $Root "$Scenario-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Force -Path (Join-Path $repository 'apps/app') | Out-Null
@@ -17,6 +17,14 @@ function New-ReleaseFixtureRepository {
     Invoke-FixtureGit $repository @('add','.') | Out-Null
     Invoke-FixtureGit $repository @('commit','-m','Initial fixture') | Out-Null
     $initialCommit = Invoke-FixtureGit $repository @('rev-parse','HEAD') | Select-Object -First 1
+
+    if ($Scenario -eq 'bootstrap') {
+        return @{ Repository = $repository; InitialCommit = $initialCommit; Head = $initialCommit; Config = @{
+            versioning = @{ defaultBump = 'minor' }
+            branches = @{ main = @{ channel = 'stable' }; develop = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
+            components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } }
+        } }
+    }
 
     Invoke-FixtureGit $repository @('tag','app/v1.2.3',$initialCommit) | Out-Null
     switch ($Scenario) {

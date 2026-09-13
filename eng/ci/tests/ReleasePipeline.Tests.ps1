@@ -67,6 +67,17 @@ Describe 'Release configuration validation' {
 }
 
 Describe 'Git release fixtures' {
+    It 'creates an initial prerelease for every changed component on a root commit' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario bootstrap
+        try {
+            Push-Location $fixture.Repository
+            $plan = New-ReleasePlan -Config $fixture.Config -Branch develop
+            $plan.releases.Count | Should -Be 1
+            $plan.releases[0].semanticVersion | Should -Be '0.1.0-beta.1'
+            $plan.releases[0].tag | Should -Be 'app/v0.1.0-beta.1'
+        } finally { Pop-Location }
+    }
+
     It 'calculates stable and prerelease versions from namespaced tags' {
         $stable = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
         $prerelease = New-ReleaseFixtureRepository -Root $TestDrive -Scenario prerelease
@@ -79,8 +90,10 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
         try {
             Push-Location $prerelease.Repository
-            (New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-beta.3'
+            (New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.4.0-beta.1'
             (New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.2'
+            { New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1 -ExactVersions @{ app = '1.3.0' } } | Should -Throw '*channel version floor*'
+            { New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1 -ExactVersions @{ app = '1.2.0' } } | Should -Throw '*channel version floor*'
         } finally { Pop-Location }
     }
 
@@ -108,6 +121,16 @@ Describe 'Git release fixtures' {
 
             $idempotent = [pscustomobject]@{ tag = 'app/v1.2.3'; component = 'app'; semanticVersion = '1.2.3'; commit = $fixture.InitialCommit }
             (New-ReleaseTag -Release $idempotent).status | Should -Be 'already-exists'
+        } finally { Pop-Location }
+    }
+
+    It 'releases all configured components only when explicitly requested' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        try {
+            Push-Location $fixture.Repository
+            $plan = New-ReleasePlan -Config $fixture.Config -Branch develop -BaseRef HEAD -ReleaseAll
+            $plan.releases.Count | Should -Be 1
+            $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
         } finally { Pop-Location }
     }
 
