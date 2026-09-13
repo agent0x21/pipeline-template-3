@@ -46,7 +46,7 @@ function App() {
         <p className="eyebrow">WORKSPACE OVERVIEW</p>
         <h1>Good morning, Jon</h1>
         <p className="intro">
-          Here’s what’s happening across your workspace today.
+          Here&apos;s what&apos;s happening across your workspace today.
         </p>
         <section className="hero-card">
           <div>
