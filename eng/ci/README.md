@@ -29,6 +29,8 @@ Tag pushes are atomic and retry transient push failures up to three times. If an
 
 The GitHub Actions adapter retains workflow artifacts for 30 days and publishes an idempotent GitHub release record for each tagged component. The provider-specific metadata script uses `GITHUB_TOKEN`; its behavior is intentionally kept outside the provider-neutral release module.
 
+`pnpm test-ci-legacy` builds the included non-SDK-style .NET Framework 4.8 solution through `vswhere.exe` and MSBuild. Run it on a Windows machine with Visual Studio Build Tools and the .NET Framework 4.8 targeting pack installed.
+
 Packaging creates generic ZIP files and `artifacts/provenance.json`. The explicit `New-ReleaseTags.ps1` step is the only operation that mutates Git. It is idempotent when the requested tag already points to the planned commit and fails safely on a conflicting tag.
 
 For legacy .NET components, set `type: legacy-dotnet-framework` and provide a PowerShell build command that discovers MSBuild (for example through `vswhere.exe`) and invokes it. Provider-specific workflows should pass normalized parameters to these scripts rather than embedding release logic.

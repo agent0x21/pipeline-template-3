@@ -262,16 +262,23 @@ function Invoke-ComponentPackage {
 
 function Find-MSBuild {
     [CmdletBinding()]
-    param([string]$PreferredPath)
+    param([string]$PreferredPath, [switch]$UseVsWhere)
     if ($PreferredPath -and (Test-Path -LiteralPath $PreferredPath -PathType Leaf)) { return (Resolve-Path -LiteralPath $PreferredPath).Path }
-    $command = Get-Command msbuild.exe -ErrorAction SilentlyContinue
-    if ($command) { return $command.Source }
+    if (-not $UseVsWhere) {
+        $command = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+        if ($command) { return $command.Source }
+    }
     $vswhere = Get-Command vswhere.exe -ErrorAction SilentlyContinue
-    if ($vswhere) {
-        $candidate = & $vswhere.Source '-latest' '-products' '*' '-requires' 'Microsoft.Component.MSBuild' '-find' 'MSBuild\\**\\Bin\\MSBuild.exe' 2>$null | Select-Object -First 1
+    $vswherePath = if ($vswhere) { $vswhere.Source } else { $null }
+    if (-not $vswherePath -and ${env:ProgramFiles(x86)}) {
+        $defaultVsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $defaultVsWhere -PathType Leaf) { $vswherePath = $defaultVsWhere }
+    }
+    if ($vswherePath) {
+        $candidate = & $vswherePath '-latest' '-products' '*' '-requires' 'Microsoft.Component.MSBuild' '-find' 'MSBuild\\**\\Bin\\MSBuild.exe' 2>$null | Select-Object -First 1
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
-    throw 'MSBuild.exe was not found. Install Visual Studio Build Tools or provide build.msbuildPath.'
+    throw 'MSBuild.exe was not found. Install Visual Studio Build Tools with Microsoft.Component.MSBuild or provide build.msbuildPath.'
 }
 
 function Invoke-ComponentBuild {

@@ -13,6 +13,7 @@
     "release-package": "pwsh ./eng/ci/Invoke-ReleasePackage.ps1 -PlanPath ./release-plan.json",
     "release-tags": "pwsh ./eng/ci/New-ReleaseTags.ps1 -PlanPath ./release-plan.json",
     "test-ci": "pwsh ./eng/ci/Invoke-ReleasePipelineTests.ps1",
+    "test-ci-legacy": "pwsh ./eng/ci/Test-LegacyMSBuildFixture.ps1",
     "build": "pnpm build-web && dotnet build ./apps/api"
   },
   "keywords": [],

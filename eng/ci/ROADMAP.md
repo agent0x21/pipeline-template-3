@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Validate the first release in GitHub Actions, exercise a real legacy .NET Framework build, then add artifact promotion.
+**Current focus:** Exercise a real legacy .NET Framework build, then add immutable artifact promotion.
 
 Completed foundation:
 
@@ -27,7 +27,7 @@ Completed foundation:
 - [x] Add `.release-output/`, `release-plan.json`, and test result files to `.gitignore`.
 - [x] Run `pnpm release-plan`, `pnpm test-ci`, and `pnpm release-package` on a clean checkout.
 - [ ] Review the plan and create initial component tags only after approval.
-- [ ] Run the GitHub workflow manually and verify Windows runner/tool checks.
+- [x] Run the GitHub workflow manually and verify Windows runner/tool checks.
 
 ### 2. Harden the release engine
 
