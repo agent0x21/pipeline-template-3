@@ -58,3 +58,5 @@ Packaging creates generic ZIP files and `artifacts/provenance.json`. The explici
 For legacy .NET components, set `type: legacy-dotnet-framework` and provide a PowerShell build command that discovers MSBuild (for example through `vswhere.exe`) and invokes it. Provider-specific workflows should pass normalized parameters to these scripts rather than embedding release logic.
 
 See [PROVIDER-MAPPINGS.md](PROVIDER-MAPPINGS.md) for Azure DevOps and Jenkins examples, normalized input mappings, approval boundaries, and artifact-transfer requirements.
+
+See [MIGRATION.md](MIGRATION.md) for moving from repository-global tags to component-scoped tags, selecting bootstrap version floors, and safely planning the first migrated release.
