@@ -4,7 +4,15 @@ apps/api/bin
 apps/api/obj
 apps/desktop/bin
 apps/desktop/obj
+eng/ci/tests/fixtures/**/bin/
+eng/ci/tests/fixtures/**/obj/
 .tools/
 .pnpm-store/
 artifacts/
 **/dist/
+
+.release-output/
+release-plan.json
+promotion-plan.json
+promotion-provenance.json
+testResults.xml
