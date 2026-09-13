@@ -244,6 +244,9 @@ if ($Operation -eq 'save') {
     if ($outputIndex -lt 0) { exit 1 }
     Set-Content -LiteralPath $Arguments[$outputIndex + 1] -Value 'container image'
 }
+if ($Operation -eq 'build') {
+    Set-Content -LiteralPath (Join-Path (Split-Path $MyInvocation.MyCommand.Path) 'build-args.txt') -Value ($Arguments -join "`n")
+}
 exit 0
 '@
         @{
@@ -258,8 +261,8 @@ exit 0
         } | ConvertTo-Json -Depth 12 | Set-Content $configPath
         [pscustomobject]@{
             branch = 'main'; channel = 'stable'; releases = @([pscustomobject]@{
-                component = 'api'; path = 'apps/api'; artifactPath = 'apps/api'; semanticVersion = '1.0.0'
-                tag = 'api/v1.0.0'; channel = 'stable'; bump = 'minor'; bumpSource = 'configuration'
+                component = 'api'; path = 'apps/api'; artifactPath = 'apps/api'; semanticVersion = '0.1.0-beta.2'
+                tag = 'api/v0.1.0-beta.2'; channel = 'beta'; bump = 'minor'; bumpSource = 'configuration'
                 commit = 'abc123'; buildCommand = 'Write-Output ready'; testCommand = ''
                 componentType = 'modern-dotnet'; buildSolution = ''; buildMsbuildPath = ''; buildConfiguration = 'Release'
             })
@@ -278,6 +281,13 @@ exit 0
         @(Get-ChildItem $outputPath -Filter '*.zip' -Recurse).Count | Should -Be 1
         @(Get-ChildItem $outputPath -Filter '*.container.tar' -Recurse).Count | Should -Be 1
         (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 2
+        $buildArgs = Get-Content (Join-Path $shimPath 'build-args.txt')
+        $buildArgs | Should -Contain 'DOTNET_Version=0.1.0-beta.2'
+        $buildArgs | Should -Contain 'DOTNET_VersionPrefix=0.1.0'
+        $buildArgs | Should -Contain 'DOTNET_VersionSuffix=beta.2'
+        $buildArgs | Should -Contain 'DOTNET_AssemblyVersion=0.1.0.0'
+        $buildArgs | Should -Contain 'DOTNET_FileVersion=0.1.0.0'
+        $buildArgs | Should -Contain 'DOTNET_InformationalVersion=0.1.0-beta.2'
     }
 }
 
