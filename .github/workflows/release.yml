@@ -33,7 +33,7 @@ jobs:
   release:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -44,7 +44,7 @@ jobs:
           foreach ($tool in @('git','pwsh','dotnet','node')) {
             if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
           }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.3.4
       - name: Validate pnpm
@@ -72,7 +72,7 @@ jobs:
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
           path: artifacts/

@@ -4,6 +4,10 @@
 
 This repository is a pnpm workspace. The browser client is in `apps/web` (React, TypeScript, and Vite); its source, styles, and images live under `apps/web/src`, while static files are in `apps/web/public`. The HTTP API is in `apps/api` as an ASP.NET Core project, and the Windows desktop client is in `apps/desktop` as a WPF project. Reusable TypeScript code belongs in `packages/shared/src`. Keep generated output such as `apps/web/dist` out of source changes.
 
+## Project Tracking
+
+Read [`eng/ci/ROADMAP.md`](eng/ci/ROADMAP.md) before making CI/CD changes. Keep its checkboxes and “Current focus” section aligned with the implementation, and treat `prompt/main-prompt.md` as the complete product requirements source.
+
 ## Build, Test, and Development Commands
 
 Use pnpm 12.3.4, as declared in the root `package.json`.
