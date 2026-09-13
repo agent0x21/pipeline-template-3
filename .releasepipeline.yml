@@ -1,0 +1,51 @@
+versioning:
+  strategy: independent
+  source: git-tags
+  defaultBump: minor
+
+runtime:
+  operatingSystem: windows
+  scripting: pwsh
+
+branches:
+  main:
+    channel: stable
+  qa:
+    channel: rc
+  dev:
+    channel: beta
+
+components:
+  web:
+    path: apps/web
+    type: node
+    tagPrefix: web
+    build:
+      command: pnpm --filter ./apps/web build
+    test:
+      command: pnpm --filter ./apps/web lint
+    package:
+      path: apps/web/dist
+  api:
+    path: apps/api
+    type: modern-dotnet
+    tagPrefix: api
+    build:
+      command: dotnet publish ./apps/api -c Release -o .release-output/api
+    package:
+      path: .release-output/api
+    publishing:
+      adapter: container
+      image: ghcr.io/agent0x21/pipeline-template-3-api
+      dockerfile: apps/api/Dockerfile
+      context: .
+      oidc: true
+    dependencies: []
+  desktop:
+    path: apps/desktop
+    type: modern-dotnet-windows
+    tagPrefix: desktop
+    build:
+      command: dotnet publish ./apps/desktop -c Release -o .release-output/desktop
+    package:
+      path: .release-output/desktop

@@ -1,0 +1,104 @@
+name: Promote Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions run ID containing the release artifact
+        required: true
+        type: string
+      target_channel:
+        description: Promotion target channel
+        required: true
+        type: choice
+        options: [rc, stable]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: "promotion-${{ inputs.target_channel }}"
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: self-hosted
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install YAML parser
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Download immutable source artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: "release-${{ inputs.source_run_id }}"
+          run-id: "${{ inputs.source_run_id }}"
+          github-token: "${{ github.token }}"
+          path: source-artifacts
+      - name: Plan promotion
+        shell: pwsh
+        run: .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath .\source-artifacts\artifacts\provenance.json -TargetChannel '${{ inputs.target_channel }}'
+      - name: Create promotion tags
+        shell: pwsh
+        run: .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
+      - name: Upload promotion record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
+          path: |
+            source-artifacts/
+            promotion-plan.json
+            promotion-provenance.json
+          retention-days: 30
+      - name: Publish GitHub release metadata
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\promotion-plan.json
+      - name: Upload deployable GitHub release assets
+        shell: pw
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\promotion-plan.json -ProvenancePath .\source-artifacts\artifacts\provenance.json
+
+  publish:
+    needs: promote
+    runs-on: self-hosted
+    environment: ${{ inputs.target_channel }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Download promotion record
+        uses: actions/download-artifact@v7
+        with:
+          name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
+          path: promotion-artifacts
+      - name: Authenticate to GitHub Container Registry
+        shell: pwsh
+        env:
+          GHCR_TOKEN: "${{ github.token }}"
+        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+      - name: Publish registry artifacts
+        shell: pwsh
+        run: |
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
+      - name: Upload registry publication record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "registry-publication-${{ github.run_id }}"
+          path: registry-publication.json
+          retention-days: 30

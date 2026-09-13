@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    branches: [dev, qa, main]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: Version bump for all changed components
+        required: false
+        type: choice
+        options: [minor, patch, major]
+        default: minor
+      component_overrides:
+        description: 'JSON map, for example {"api":"patch"}'
+        required: false
+        type: string
+        default: "{}"
+      exact_versions:
+        description: 'Explicit SemVer map, for example {"api":"2.4.0"}'
+        required: false
+        type: string
+        default: "{}"
+      release_all:
+        description: Release every configured component, including components without source changes
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "release-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: self-hosted
+    outputs:
+      channel: ${{ steps.release-channel.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git','pwsh','dotnet','node','docker')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
+          }
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.3.4
+      - name: Validate pnpm
+        shell: pwsh
+        run: |
+          if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+            throw 'Required tool not found: pnpm'
+          }
+      - name: Install YAML parser
+        shell: pwsh
+        run: |
+          Install-Module powershell-yaml -Scope CurrentUser -Force
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Test release engine
+        shell: pwsh
+        run: .\eng\ci\Invoke-ReleasePipelineTests.ps1
+      - name: Plan release
+        shell: pwsh
+        env:
+          VERSION_BUMP: "${{ inputs.version_bump || 'minor' }}"
+          COMPONENT_OVERRIDES: "${{ inputs.component_overrides || '{}' }}"
+          EXACT_VERSIONS: "${{ inputs.exact_versions || '{}' }}"
+          RELEASE_ALL: "${{ inputs.release_all || false }}"
+        run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
+      - name: Expose release channel
+        id: release-channel
+        shell: pwsh
+        run: |
+          $plan = Get-Content .\release-plan.json -Raw | ConvertFrom-Json
+          "channel=$($plan.channel)" >> $env:GITHUB_OUTPUT
+      - name: Build and package
+        shell: pwsh
+        run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: "release-${{ github.run_id }}"
+          path: |
+            artifacts/
+            release-plan.json
+          retention-days: 30
+
+  create-tags:
+    needs: release
+    runs-on: self-hosted
+    environment: release-${{ needs.release.outputs.channel }}
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Download reviewed release plan
+        uses: actions/download-artifact@v7
+        with:
+          name: "release-${{ github.run_id }}"
+          path: release-artifacts
+      - name: Create release tags
+        shell: pwsh
+        run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-artifacts\release-plan.json -Push
+      - name: Publish GitHub release metadata
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-artifacts\release-plan.json
+      - name: Upload deployable GitHub release assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\release-artifacts\release-plan.json -ProvenancePath .\release-artifacts\artifacts\provenance.json
+
+  publish:
+    needs: create-tags
+    runs-on: self-hosted
+    environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Download immutable release artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: "release-${{ github.run_id }}"
+          path: release-artifacts
+      - name: Authenticate to GitHub Container Registry
+        shell: pwsh
+        env:
+          GHCR_TOKEN: "${{ github.token }}"
+        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+      - name: Publish registry artifacts
+        shell: pwsh
+        run: |
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\release-artifacts\artifacts\provenance.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
+      - name: Upload registry publication record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "registry-publication-${{ github.run_id }}"
+          path: registry-publication.json
+          retention-days: 30

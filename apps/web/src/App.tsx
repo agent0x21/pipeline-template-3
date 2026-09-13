@@ -26,7 +26,11 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void loadForecast();
+    const timer = window.setTimeout(() => {
+      void loadForecast();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [loadForecast]);
 
   return (
