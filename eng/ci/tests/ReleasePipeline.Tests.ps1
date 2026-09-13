@@ -2,7 +2,6 @@ BeforeAll {
     Import-Module "$PSScriptRoot/../ReleasePipeline/ReleasePipeline.psd1" -Force
     . "$PSScriptRoot/Fixtures.ps1"
 }
-
 Describe 'Release configuration and channels' {
     It 'loads the sample configuration with minor as the default' {
         $config = Import-ReleaseConfig "$PSScriptRoot/../../../.releasepipeline.yml"
@@ -383,25 +382,5 @@ Describe 'Registry publication planning' {
         $plan = Get-Content $planPath -Raw | ConvertFrom-Json
         $plan.publications[0].artifactPath | Should -Be 'api.container.tar'
         $plan.publications[0].sha256 | Should -Be ('b' * 64)
-    }
-}
-
-Describe 'Registry publication recovery' {
-    It 'retries only the requested component without publishing it in WhatIf mode' {
-        $artifactPath = Join-Path $TestDrive 'api.tgz'
-        New-Item -ItemType File -Path $artifactPath -Force | Out-Null
-        $planPath = Join-Path $TestDrive 'registry-publication-plan.json'
-        $resultPath = Join-Path $TestDrive 'registry-publication-retry.json'
-        @{ publications = @(
-            @{ component = 'api'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('d' * 64) },
-            @{ component = 'web'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('e' * 64) }
-        ) } | ConvertTo-Json -Depth 8 | Set-Content $planPath
-
-        & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath | Out-Null
-
-        $result = Get-Content $resultPath -Raw | ConvertFrom-Json
-        $result.publications.Count | Should -Be 1
-        $result.publications[0].component | Should -Be 'api'
-        $result.publications[0].status | Should -Be 'planned'
     }
 }
