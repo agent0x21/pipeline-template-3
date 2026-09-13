@@ -19,6 +19,82 @@ function ConvertTo-Hashtable([object] $Value) {
     return $Value
 }
 
+function Test-ReleaseConfigPath {
+    param([Parameter(Mandatory)][string]$Value, [Parameter(Mandatory)][string]$ConfigDirectory, [Parameter(Mandatory)][string]$Description)
+    if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Description must not be empty." }
+    if ([IO.Path]::IsPathRooted($Value)) { throw "$Description must be relative to the configuration file." }
+
+    $root = [IO.Path]::GetFullPath($ConfigDirectory).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $candidate = [IO.Path]::GetFullPath((Join-Path $root $Value))
+    $rootWithSeparator = "$root$([IO.Path]::DirectorySeparatorChar)"
+    if (-not $candidate.StartsWith($rootWithSeparator, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Description must remain within the configuration directory."
+    }
+    return $candidate
+}
+
+function Test-ReleaseConfig {
+    param([Parameter(Mandatory)][hashtable]$Config, [Parameter(Mandatory)][string]$ConfigDirectory)
+    if (-not $Config.components -or @($Config.components.Keys).Count -eq 0) { throw 'Configuration must define at least one component.' }
+    if (-not $Config.versioning) { throw 'Configuration must define versioning.' }
+    if (-not $Config.versioning.defaultBump) { $Config.versioning.defaultBump = 'minor' }
+    if ($Config.versioning.defaultBump -notin @('major','minor','patch')) { throw 'versioning.defaultBump must be major, minor, or patch.' }
+    if (-not $Config.branches -or @($Config.branches.Keys).Count -eq 0) { throw 'Configuration must define at least one branch channel.' }
+
+    foreach ($branch in $Config.branches.Keys) {
+        if ([string]::IsNullOrWhiteSpace([string]$branch)) { throw 'Branch names must not be empty.' }
+        $branchConfig = $Config.branches[$branch]
+        $channel = if ($branchConfig -is [System.Collections.IDictionary] -and $branchConfig.ContainsKey('channel')) { [string]$branchConfig.channel } else { '' }
+        if ($channel -notin @('stable','beta','rc')) { throw "Branch '$branch' must specify stable, beta, or rc as its channel." }
+    }
+
+    $tagPrefixes = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $Config.components.Keys) {
+        if ([string]::IsNullOrWhiteSpace([string]$name)) { throw 'Component names must not be empty.' }
+        $component = $Config.components[$name]
+        if ($component -isnot [System.Collections.IDictionary]) { throw "Component '$name' must be a mapping." }
+        foreach ($required in @('path','tagPrefix')) { if (-not $component[$required]) { throw "Component '$name' requires '$required'." } }
+        $tagPrefix = [string]$component.tagPrefix
+        if ($tagPrefix -notmatch '^[^/\\\s]+(?:/[^/\\\s]+)*$') { throw "Component '$name' has an invalid tagPrefix '$tagPrefix'." }
+        if (-not $tagPrefixes.Add($tagPrefix)) { throw "Component '$name' duplicates tagPrefix '$tagPrefix'." }
+
+        $componentPath = Test-ReleaseConfigPath -Value ([string]$component.path) -ConfigDirectory $ConfigDirectory -Description "Component '$name' path"
+        if (-not (Test-Path -LiteralPath $componentPath -PathType Container)) { throw "Component '$name' path does not exist: $($component.path)" }
+        if ($component.ContainsKey('build') -and $component.build -is [System.Collections.IDictionary] -and $component.build.ContainsKey('solution') -and $component.build.solution) {
+            $solutionPath = Test-ReleaseConfigPath -Value ([string]$component.build.solution) -ConfigDirectory $ConfigDirectory -Description "Component '$name' build.solution"
+            if (-not (Test-Path -LiteralPath $solutionPath -PathType Leaf)) { throw "Component '$name' build.solution does not exist: $($component.build.solution)" }
+        }
+    }
+
+    foreach ($name in $Config.components.Keys) {
+        $dependencies = if ($Config.components[$name].ContainsKey('dependencies')) { @($Config.components[$name].dependencies) } else { @() }
+        foreach ($dependency in $dependencies) {
+            $dependencyName = [string]$dependency
+            if (-not $Config.components.ContainsKey($dependencyName)) { throw "Component '$name' references missing dependency '$dependencyName'." }
+            if ($dependencyName -eq $name) { throw "Component '$name' cannot depend on itself." }
+        }
+    }
+
+    $remainingDependencies = @{}
+    foreach ($name in $Config.components.Keys) {
+        $remainingDependencies[$name] = if ($Config.components[$name].ContainsKey('dependencies')) { @($Config.components[$name].dependencies).Count } else { 0 }
+    }
+    $ready = [Collections.Generic.Queue[string]]::new()
+    foreach ($name in $remainingDependencies.Keys) { if ($remainingDependencies[$name] -eq 0) { $ready.Enqueue($name) } }
+    $processed = 0
+    while ($ready.Count -gt 0) {
+        $resolved = $ready.Dequeue(); $processed++
+        foreach ($name in $Config.components.Keys) {
+            $dependencies = if ($Config.components[$name].ContainsKey('dependencies')) { @($Config.components[$name].dependencies) } else { @() }
+            if ($dependencies -contains $resolved) {
+                $remainingDependencies[$name]--
+                if ($remainingDependencies[$name] -eq 0) { $ready.Enqueue($name) }
+            }
+        }
+    }
+    if ($processed -ne $Config.components.Count) { throw 'Component dependency graph contains a cycle.' }
+}
+
 function Import-ReleaseConfig {
     [CmdletBinding()]
     param([Parameter(Mandatory)][ValidateScript({ Test-Path -LiteralPath $_ -PathType Leaf })][string] $Path)
@@ -31,14 +107,7 @@ function Import-ReleaseConfig {
         throw 'YAML support is unavailable. Install the powershell-yaml module or provide a JSON configuration.'
     }
     $config = ConvertTo-Hashtable $config
-    if (-not $config.components -or @($config.components.Keys).Count -eq 0) { throw 'Configuration must define at least one component.' }
-    if (-not $config.versioning) { throw 'Configuration must define versioning.' }
-    if (-not $config.versioning.defaultBump) { $config.versioning.defaultBump = 'minor' }
-    if ($config.versioning.defaultBump -notin @('major','minor','patch')) { throw 'versioning.defaultBump must be major, minor, or patch.' }
-    foreach ($name in $config.components.Keys) {
-        $component = $config.components[$name]
-        foreach ($required in @('path','tagPrefix')) { if (-not $component[$required]) { throw "Component '$name' requires '$required'." } }
-    }
+    Test-ReleaseConfig -Config $config -ConfigDirectory (Split-Path -Parent (Resolve-Path -LiteralPath $Path))
     return $config
 }
 
@@ -123,6 +192,20 @@ function Compare-CoreVersion([object]$Left, [object]$Right) {
     return 0
 }
 
+function Get-ReleaseForCommit {
+    param([Parameter(Mandatory)][hashtable]$Component, [Parameter(Mandatory)][string]$Commit, [Parameter(Mandatory)][string]$Channel)
+    $prefix = [string]$Component.tagPrefix
+    $matches = foreach ($tag in (Get-Git @('tag','--list',"$prefix/v*"))) {
+        if ($tag -notmatch "^$([regex]::Escape($prefix))/v(?<version>.+)$") { continue }
+        try { $version = ConvertFrom-SemVer $Matches.version } catch { continue }
+        if (($Channel -eq 'stable' -and $version.Channel) -or ($Channel -ne 'stable' -and $version.Channel -ne $Channel)) { continue }
+        $tagCommit = Get-Git @('rev-list','-n','1',$tag) | Select-Object -First 1
+        if ($tagCommit -eq $Commit) { [pscustomobject]@{ Tag = $tag; Version = $version } }
+    }
+    if (@($matches).Count -gt 1) { throw "Multiple $Channel release tags for component '$prefix' point to commit '$Commit'." }
+    return @($matches) | Select-Object -First 1
+}
+
 function New-ReleasePlan {
     [CmdletBinding()]
     param(
@@ -140,17 +223,18 @@ function New-ReleasePlan {
         $component = $Config.components[$name]; $current = Get-ComponentVersion $component
         $bump = Resolve-Bump $name $Config $VersionBump $ComponentOverrides
         if ($bump.Type -notin @('major','minor','patch')) { throw "Invalid bump for '$name': $($bump.Type)" }
-        $versionText = if ($ExactVersions[$name]) { [string]$ExactVersions[$name] } else {
+        $existingRelease = Get-ReleaseForCommit -Component $component -Commit $commitSha -Channel $channel
+        $versionText = if ($existingRelease) { $existingRelease.Version.Text } elseif ($ExactVersions[$name]) { [string]$ExactVersions[$name] } else {
             $base = if ($current) { $current } else { ConvertFrom-SemVer ([string]$(if ($component.ContainsKey('initialVersion')) { $component.initialVersion } else { '0.0.0' })) }
             $major = $base.Major; $minor = $base.Minor; $patch = $base.Patch
             if ($bump.Type -eq 'major') { $major++; $minor = 0; $patch = 0 } elseif ($bump.Type -eq 'minor') { $minor++; $patch = 0 } else { $patch++ }
             ConvertTo-SemVer $major $minor $patch '' 0
         }
         $parsed = ConvertFrom-SemVer $versionText
-        if ($current -and (Compare-CoreVersion $parsed $current) -le 0 -and -not $ExactVersions[$name]) { throw "Calculated version for '$name' is not newer than current version." }
-        if ($ExactVersions[$name] -and $current -and (Compare-CoreVersion $parsed $current) -le 0) { throw "Exact version for '$name' must be greater than current stable version." }
+        if (-not $existingRelease -and $current -and (Compare-CoreVersion $parsed $current) -le 0 -and -not $ExactVersions[$name]) { throw "Calculated version for '$name' is not newer than current version." }
+        if (-not $existingRelease -and $ExactVersions[$name] -and $current -and (Compare-CoreVersion $parsed $current) -le 0) { throw "Exact version for '$name' must be greater than current stable version." }
         $sequence = 0
-        if ($channel -ne 'stable' -and -not ($ExactVersions[$name] -and $parsed.Channel)) {
+        if (-not $existingRelease -and $channel -ne 'stable' -and -not ($ExactVersions[$name] -and $parsed.Channel)) {
             $tagPrefix = [string]$component.tagPrefix
             $tagPattern = "$tagPrefix/v$versionText-$channel.*"
             $sequence = @(Get-Git @('tag','--list',$tagPattern) | ForEach-Object { if ($_ -match "-$channel\.(?<n>\d+)$") { [int]$Matches.n } } | Measure-Object -Maximum).Maximum
@@ -158,7 +242,7 @@ function New-ReleasePlan {
             $versionText = "$versionText-$channel.$sequence"
         }
         if ($ExactVersions[$name] -and $parsed.Channel -and $parsed.Channel -ne $channel) { throw "Exact version channel for '$name' does not match branch channel '$channel'." }
-        [pscustomobject]@{ component = $name; path = [string]$component.path; componentType = if ($component.ContainsKey('type')) { [string]$component.type } else { '' }; artifactPath = if ($component.ContainsKey('package') -and $component.package.ContainsKey('path')) { [string]$component.package.path } else { [string]$component.path }; semanticVersion = $versionText; tag = "$($component.tagPrefix)/v$versionText"; channel = $channel; bump = $bump.Type; bumpSource = if ($ExactVersions[$name]) { 'exact-version' } else { $bump.Source }; currentVersion = if ($current) { $current.Text } else { $null }; commit = $commitSha; ciRunId = $CiRunId; repository = $Repository; buildCommand = if ($component.ContainsKey('build') -and $component.build.ContainsKey('command')) { [string]$component.build.command } else { '' }; buildSolution = if ($component.ContainsKey('build') -and $component.build.ContainsKey('solution')) { [string]$component.build.solution } else { '' }; buildMsbuildPath = if ($component.ContainsKey('build') -and $component.build.ContainsKey('msbuildPath')) { [string]$component.build.msbuildPath } else { '' }; buildConfiguration = if ($component.ContainsKey('build') -and $component.build.ContainsKey('configuration')) { [string]$component.build.configuration } else { 'Release' }; testCommand = if ($component.ContainsKey('test') -and $component.test.ContainsKey('command')) { [string]$component.test.command } else { '' } }
+        [pscustomobject]@{ component = $name; path = [string]$component.path; componentType = if ($component.ContainsKey('type')) { [string]$component.type } else { '' }; artifactPath = if ($component.ContainsKey('package') -and $component.package.ContainsKey('path')) { [string]$component.package.path } else { [string]$component.path }; semanticVersion = $versionText; tag = if ($existingRelease) { $existingRelease.Tag } else { "$($component.tagPrefix)/v$versionText" }; channel = $channel; bump = $bump.Type; bumpSource = if ($existingRelease) { 'rerun' } elseif ($ExactVersions[$name]) { 'exact-version' } else { $bump.Source }; currentVersion = if ($current) { $current.Text } else { $null }; commit = $commitSha; ciRunId = $CiRunId; repository = $Repository; buildCommand = if ($component.ContainsKey('build') -and $component.build.ContainsKey('command')) { [string]$component.build.command } else { '' }; buildSolution = if ($component.ContainsKey('build') -and $component.build.ContainsKey('solution')) { [string]$component.build.solution } else { '' }; buildMsbuildPath = if ($component.ContainsKey('build') -and $component.build.ContainsKey('msbuildPath')) { [string]$component.build.msbuildPath } else { '' }; buildConfiguration = if ($component.ContainsKey('build') -and $component.build.ContainsKey('configuration')) { [string]$component.build.configuration } else { 'Release' }; testCommand = if ($component.ContainsKey('test') -and $component.test.ContainsKey('command')) { [string]$component.test.command } else { '' } }
     }
     return [pscustomobject]@{ generatedAt = [DateTime]::UtcNow.ToString('o'); branch = $Branch; channel = $channel; commit = $commitSha; releases = @($releases) }
 }

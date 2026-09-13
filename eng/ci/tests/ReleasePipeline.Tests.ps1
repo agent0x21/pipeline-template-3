@@ -1,5 +1,6 @@
 BeforeAll {
     Import-Module "$PSScriptRoot/../ReleasePipeline/ReleasePipeline.psd1" -Force
+    . "$PSScriptRoot/Fixtures.ps1"
 }
 
 Describe 'Release configuration and channels' {
@@ -23,12 +24,91 @@ Describe 'Release planning' {
         $bump.Type | Should -Be 'major'; $bump.Source | Should -Be 'component'
     }
 
+    It 'propagates affected components through dependencies without changing unrelated components' {
+        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{
+            common = @{ path = 'src/common'; tagPrefix = 'common' }
+            api = @{ path = 'src/api'; tagPrefix = 'api'; dependencies = @('common') }
+            web = @{ path = 'src/web'; tagPrefix = 'web' }
+        }; branches = @{ develop = @{ channel = 'beta' } } }
+        $affected = & (Get-Module ReleasePipeline) { param($cfg) Get-AffectedComponents $cfg @('common') } $config
+        @($affected | Sort-Object) | Should -Be @('api','common')
+    }
+
     It 'uses the configured artifact path in a release plan' {
         $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'src/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } }; branches = @{ main = @{ channel = 'stable' } } }
         Mock -ModuleName ReleasePipeline Get-Git { if ($Arguments[0] -eq 'rev-parse') { 'abc123' } else { @() } }
         Mock -ModuleName ReleasePipeline Get-ChangedComponents { @('app') }
         $plan = New-ReleasePlan -Config $config -Branch main -Commit HEAD
         $plan.releases[0].artifactPath | Should -Be 'out/app'
+    }
+}
+
+Describe 'Release configuration validation' {
+    BeforeEach {
+        $configPath = Join-Path $TestDrive 'release-config.json'
+        New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'apps/app') | Out-Null
+    }
+
+    It 'rejects a missing dependency' {
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('missing') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*missing dependency*'
+    }
+
+    It 'rejects dependency cycles, duplicate prefixes, and paths outside the repository' {
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*duplicates tagPrefix*'
+
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = '../outside'; tagPrefix = 'app' } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*within the configuration directory*'
+
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'worker'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*contains a cycle*'
+    }
+}
+
+Describe 'Git release fixtures' {
+    It 'calculates stable and prerelease versions from namespaced tags' {
+        $stable = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $prerelease = New-ReleaseFixtureRepository -Root $TestDrive -Scenario prerelease
+        try {
+            Push-Location $stable.Repository
+            (New-ReleasePlan -Config $stable.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0'
+            $exactPlan = New-ReleasePlan -Config $stable.Config -Branch main -BaseRef HEAD~1 -ExactVersions @{ app = '1.4.0' }
+            $exactPlan.releases[0].semanticVersion | Should -Be '1.4.0'
+            $exactPlan.releases[0].bumpSource | Should -Be 'exact-version'
+        } finally { Pop-Location }
+        try {
+            Push-Location $prerelease.Repository
+            (New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-beta.3'
+            (New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.2'
+        } finally { Pop-Location }
+    }
+
+    It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
+        $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
+        $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun
+        try {
+            Push-Location $legacy.Repository
+            (New-ReleasePlan -Config $legacy.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0'
+        } finally { Pop-Location }
+        try {
+            Push-Location $rerun.Repository
+            $plan = New-ReleasePlan -Config $rerun.Config -Branch develop -BaseRef HEAD~1
+            $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
+            $plan.releases[0].bumpSource | Should -Be 'rerun'
+        } finally { Pop-Location }
+    }
+
+    It 'rejects a tag conflict and preserves an idempotent tag' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario conflict
+        try {
+            Push-Location $fixture.Repository
+            $conflict = [pscustomobject]@{ tag = 'app/v1.3.0-beta.1'; component = 'app'; semanticVersion = '1.3.0-beta.1'; commit = $fixture.Head }
+            { New-ReleaseTag -Release $conflict } | Should -Throw '*another commit*'
+
+            $idempotent = [pscustomobject]@{ tag = 'app/v1.2.3'; component = 'app'; semanticVersion = '1.2.3'; commit = $fixture.InitialCommit }
+            (New-ReleaseTag -Release $idempotent).status | Should -Be 'already-exists'
+        } finally { Pop-Location }
     }
 }
 

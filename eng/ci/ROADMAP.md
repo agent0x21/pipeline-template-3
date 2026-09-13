@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Validate the first release in GitHub Actions, then add publishing and promotion.
+**Current focus:** Validate the first release in GitHub Actions and finish concurrency/legacy-build hardening before adding publishing and promotion.
 
 Completed foundation:
 
@@ -31,9 +31,9 @@ Completed foundation:
 
 ### 2. Harden the release engine
 
-- [ ] Add fixture repositories for stable tags, prereleases, legacy tags, reruns, and tag conflicts.
+- [x] Add fixture repositories for stable tags, prereleases, legacy tags, reruns, and tag conflicts.
 - [ ] Expand Pester coverage for exact versions, prerelease numbering, dependency traversal, and concurrency retries.
-- [ ] Validate configuration schemas and reject cycles, missing dependencies, invalid paths, and duplicate tag prefixes.
+- [x] Validate configuration schemas and reject cycles, missing dependencies, invalid paths, and duplicate tag prefixes.
 - [ ] Test a real legacy .NET Framework solution through `vswhere.exe` and MSBuild.
 
 ### 3. Publish and promote immutable artifacts
