@@ -12,7 +12,7 @@ branches:
     channel: stable
   qa:
     channel: rc
-  develop:
+  dev:
     channel: beta
 
 components:

@@ -7,7 +7,7 @@ Describe 'Release configuration and channels' {
     It 'loads the sample configuration with minor as the default' {
         $config = Import-ReleaseConfig "$PSScriptRoot/../../../.releasepipeline.yml"
         $config.versioning.defaultBump | Should -Be 'minor'
-        (Get-ReleaseChannel $config 'develop') | Should -Be 'beta'
+        (Get-ReleaseChannel $config 'dev') | Should -Be 'beta'
         (Get-ReleaseChannel $config 'main') | Should -Be 'stable'
     }
 }
@@ -19,7 +19,7 @@ Describe 'Release planning' {
     }
 
     It 'gives component overrides precedence over workflow overrides' {
-        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{}; branches = @{ develop = @{ channel = 'beta' } } }
+        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{}; branches = @{ dev = @{ channel = 'beta' } } }
         $bump = & (Get-Module ReleasePipeline) { param($cfg) Resolve-Bump 'app' $cfg 'patch' @{ app = 'major' } } $config
         $bump.Type | Should -Be 'major'; $bump.Source | Should -Be 'component'
     }
@@ -29,7 +29,7 @@ Describe 'Release planning' {
             common = @{ path = 'src/common'; tagPrefix = 'common' }
             api = @{ path = 'src/api'; tagPrefix = 'api'; dependencies = @('common') }
             web = @{ path = 'src/web'; tagPrefix = 'web' }
-        }; branches = @{ develop = @{ channel = 'beta' } } }
+        }; branches = @{ dev = @{ channel = 'beta' } } }
         $affected = & (Get-Module ReleasePipeline) { param($cfg) Get-AffectedComponents $cfg @('common') } $config
         @($affected | Sort-Object) | Should -Be @('api','common')
     }
@@ -71,7 +71,7 @@ Describe 'Git release fixtures' {
         $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario bootstrap
         try {
             Push-Location $fixture.Repository
-            $plan = New-ReleasePlan -Config $fixture.Config -Branch develop
+            $plan = New-ReleasePlan -Config $fixture.Config -Branch dev
             $plan.releases.Count | Should -Be 1
             $plan.releases[0].semanticVersion | Should -Be '0.1.0-beta.1'
             $plan.releases[0].tag | Should -Be 'app/v0.1.0-beta.1'
@@ -90,9 +90,9 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
         try {
             Push-Location $prerelease.Repository
-            (New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.4.0-beta.1'
+            (New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.4.0-beta.1'
             (New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.2'
-            { New-ReleasePlan -Config $prerelease.Config -Branch develop -BaseRef HEAD~1 -ExactVersions @{ app = '1.3.0' } } | Should -Throw '*channel version floor*'
+            { New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1 -ExactVersions @{ app = '1.3.0' } } | Should -Throw '*channel version floor*'
             { New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1 -ExactVersions @{ app = '1.2.0' } } | Should -Throw '*channel version floor*'
         } finally { Pop-Location }
     }
@@ -106,7 +106,7 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
         try {
             Push-Location $rerun.Repository
-            $plan = New-ReleasePlan -Config $rerun.Config -Branch develop -BaseRef HEAD~1
+            $plan = New-ReleasePlan -Config $rerun.Config -Branch dev -BaseRef HEAD~1
             $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
             $plan.releases[0].bumpSource | Should -Be 'rerun'
         } finally { Pop-Location }
@@ -128,7 +128,7 @@ Describe 'Git release fixtures' {
         $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
         try {
             Push-Location $fixture.Repository
-            $plan = New-ReleasePlan -Config $fixture.Config -Branch develop -BaseRef HEAD -ReleaseAll
+            $plan = New-ReleasePlan -Config $fixture.Config -Branch dev -BaseRef HEAD -ReleaseAll
             $plan.releases.Count | Should -Be 1
             $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
         } finally { Pop-Location }
