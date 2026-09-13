@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($tool in @('git','pwsh','dotnet','node')) {
+          foreach ($tool in @('git','pwsh','dotnet','node','docker')) {
             if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
           }
       - uses: pnpm/action-setup@v6
@@ -119,6 +119,11 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ github.token }}"
         run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-artifacts\release-plan.json
+      - name: Upload deployable GitHub release assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\release-artifacts\release-plan.json -ProvenancePath .\release-artifacts\artifacts\provenance.json
 
   publish:
     needs: create-tags
@@ -128,6 +133,7 @@ jobs:
       actions: read
       contents: read
       id-token: write
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -137,6 +143,11 @@ jobs:
         with:
           name: "release-${{ github.run_id }}"
           path: release-artifacts
+      - name: Authenticate to GitHub Container Registry
+        shell: pwsh
+        env:
+          GHCR_TOKEN: "${{ github.token }}"
+        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
       - name: Publish registry artifacts
         shell: pwsh
         run: |

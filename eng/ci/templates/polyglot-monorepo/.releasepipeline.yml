@@ -1,0 +1,63 @@
+# Copy to <repository-root>/.releasepipeline.yml and replace the example values.
+versioning:
+  strategy: independent
+  source: git-tags
+  defaultBump: minor
+
+runtime:
+  operatingSystem: windows
+  scripting: pwsh
+
+branches:
+  main:
+    channel: stable
+  qa:
+    channel: rc
+  dev:
+    channel: beta
+
+components:
+  shared-contracts:
+    path: packages/shared-contracts
+    type: node
+    tagPrefix: contracts
+    build:
+      command: pnpm --filter ./packages/shared-contracts build
+    test:
+      command: pnpm --filter ./packages/shared-contracts test
+    package:
+      path: packages/shared-contracts/dist
+
+  web:
+    path: apps/web
+    type: node
+    tagPrefix: web
+    build:
+      command: pnpm --filter ./apps/web build
+    test:
+      command: pnpm --filter ./apps/web lint
+    package:
+      path: apps/web/dist
+    dependencies:
+      - shared-contracts
+
+  api:
+    path: apps/api
+    type: modern-dotnet
+    tagPrefix: api
+    build:
+      command: dotnet publish ./apps/api/Api.csproj -c Release -o .release-output/api
+    package:
+      path: .release-output/api
+    dependencies:
+      - shared-contracts
+
+  desktop:
+    path: apps/desktop
+    type: legacy-dotnet-framework
+    tagPrefix: desktop
+    build:
+      solution: apps/desktop/Desktop.sln
+      configuration: Release
+    package:
+      path: apps/desktop/bin/Release

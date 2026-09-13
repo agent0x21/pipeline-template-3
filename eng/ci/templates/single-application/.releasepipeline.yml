@@ -1,0 +1,29 @@
+# Copy to <repository-root>/.releasepipeline.yml and replace the example values.
+versioning:
+  strategy: independent
+  source: git-tags
+  defaultBump: minor
+
+runtime:
+  operatingSystem: windows
+  scripting: pwsh
+
+branches:
+  main:
+    channel: stable
+  qa:
+    channel: rc
+  dev:
+    channel: beta
+
+components:
+  app:
+    path: apps/app
+    type: node
+    tagPrefix: app
+    build:
+      command: pnpm --filter ./apps/app build
+    test:
+      command: pnpm --filter ./apps/app test
+    package:
+      path: apps/app/dist

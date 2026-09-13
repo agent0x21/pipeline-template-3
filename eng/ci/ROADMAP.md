@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Provide reusable templates for single applications and polyglot monorepos.
+**Current focus:** Roadmap complete; validate provider adapters and keep recovery guidance current as registries are adopted.
 
 Completed foundation:
 
@@ -41,6 +41,8 @@ Completed foundation:
 ### 3. Publish and promote immutable artifacts
 
 - [x] Add GitHub artifact retention and release metadata publication.
+- [x] Attach verified deployable ZIPs to GitHub release records.
+- [x] Package and publish the API as an immutable GHCR container image.
 - [x] Add registry adapters for NuGet, npm, and container images where required.
 - [x] Model beta → RC → stable promotion without rebuilding artifacts.
 - [x] Add environment approvals, least-privilege permissions, and OIDC-ready publishing hooks.
@@ -49,8 +51,8 @@ Completed foundation:
 
 - [x] Document Azure DevOps/Jenkins input mappings to the normalized PowerShell interface.
 - [x] Add migration guidance for repository-global tags and bootstrap versions.
-- [ ] Provide reusable templates for single applications and polyglot monorepos.
-- [ ] Define recovery for partial component releases and publication/deployment retries.
+- [x] Provide reusable templates for single applications and polyglot monorepos.
+- [x] Define recovery for partial component releases and publication/deployment retries.
 
 ## Definition of done
 
