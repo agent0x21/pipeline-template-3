@@ -15,23 +15,23 @@ on:
         description: 'JSON map, for example {"api":"patch"}'
         required: false
         type: string
-        default: '{}'
+        default: "{}"
       exact_versions:
         description: 'Explicit SemVer map, for example {"api":"2.4.0"}'
         required: false
         type: string
-        default: '{}'
+        default: "{}"
 
 permissions:
   contents: write
 
 concurrency:
-  group: 'release-${{ github.ref }}'
+  group: "release-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
   release:
-    runs-on: windows-2025
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +74,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: 'release-${{ github.run_id }}'
+          name: "release-${{ github.run_id }}"
           path: artifacts/
       - name: Create release tags
         shell: pwsh
