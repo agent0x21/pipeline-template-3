@@ -246,4 +246,43 @@ Describe 'Registry publication planning' {
         $plan.publications[0].semanticVersion | Should -Be '2.1.0-rc.1'
         $plan.publications[0].sha256 | Should -Be ('c' * 64)
     }
+
+    It 'selects the immutable container image artifact for a container publication' {
+        $componentPath = Join-Path $TestDrive 'apps/api'
+        New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
+        $configPath = Join-Path $TestDrive 'container-release-config.json'
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        $provenancePath = Join-Path $TestDrive 'container-provenance.json'
+        @{ plan = @{ releases = @(@{ component = 'api'; semanticVersion = '1.2.0'; channel = 'stable'; commit = 'abc123' }) }; artifacts = @(
+            @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.zip'; sha256 = ('a' * 64); artifactType = 'zip' },
+            @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.container.tar'; sha256 = ('b' * 64); artifactType = 'container-image' }
+        ) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+
+        $planPath = Join-Path $TestDrive 'container-registry-plan.json'
+        & "$PSScriptRoot/../New-RegistryPublicationPlan.ps1" -ProvenancePath $provenancePath -ConfigPath $configPath -OutputPath $planPath | Out-Null
+        $plan = Get-Content $planPath -Raw | ConvertFrom-Json
+        $plan.publications[0].artifactPath | Should -Be 'api.container.tar'
+        $plan.publications[0].sha256 | Should -Be ('b' * 64)
+    }
+}
+
+Describe 'Registry publication recovery' {
+    It 'retries only the requested component without publishing it in WhatIf mode' {
+        $artifactPath = Join-Path $TestDrive 'api.tgz'
+        New-Item -ItemType File -Path $artifactPath -Force | Out-Null
+        $planPath = Join-Path $TestDrive 'registry-publication-plan.json'
+        $resultPath = Join-Path $TestDrive 'registry-publication-retry.json'
+        @{ publications = @(
+            @{ component = 'api'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('d' * 64) },
+            @{ component = 'web'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('e' * 64) }
+        ) } | ConvertTo-Json -Depth 8 | Set-Content $planPath
+
+        $resultJson = & "$PSScriptRoot/../Publish-RegistryArtifacts.ps1" -PlanPath $planPath -Component api -WhatIf -OutputPath $resultPath
+
+        Test-Path $resultPath | Should -BeFalse
+        $result = ($resultJson -join [Environment]::NewLine) | ConvertFrom-Json
+        $result.publications.Count | Should -Be 1
+        $result.publications[0].component | Should -Be 'api'
+        $result.publications[0].status | Should -Be 'planned'
+    }
 }
