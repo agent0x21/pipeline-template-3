@@ -23,6 +23,10 @@ Manual overrides are normalized JSON maps:
 
 The precedence order is component override, workflow-wide override, then `versioning.defaultBump` (which defaults to `minor`). Tags use `<tagPrefix>/v<SemVer>`. Beta and RC sequence numbers are calculated from existing tags, independently for each component, base version, and channel.
 
+A parentless repository commit is treated as a bootstrap change: every configured component present in that commit receives its initial release version. For an existing repository, use the manual GitHub `release_all` input (or `New-ReleasePlan.ps1 -ReleaseAll`) only when an approved release must include every configured component regardless of source changes.
+
+Channel version floors prevent branch regressions: QA releases must be above the latest stable version, and development releases must be above both the latest stable and QA/RC versions. The same validation applies to exact-version overrides; reruns of an existing tag remain idempotent.
+
 Configuration loading rejects duplicate tag prefixes, invalid or escaping component paths, missing dependencies, dependency cycles, and unsupported branch channels. Component paths and optional legacy `build.solution` paths must exist relative to the configuration file. When a release tag for the planned component and channel already points to the planned commit, the plan is treated as a rerun and reuses that immutable version.
 
 Tag pushes are atomic and retry transient push failures up to three times. If another runner creates the same tag first, the provisional local tag is removed; a matching remote commit is treated as an idempotent rerun, while a different remote commit fails safely and requires a newly reviewed plan.
