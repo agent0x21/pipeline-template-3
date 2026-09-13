@@ -249,7 +249,10 @@ function New-ArtifactPromotionPlan {
             throw "Cannot promote '$componentName' from '$sourceChannel' to '$TargetChannel'. Promotion must follow beta -> rc -> stable."
         }
 
-        $artifact = @($sourceArtifacts | Where-Object { $_.component -eq $componentName -and $_.semanticVersion -eq $source.semanticVersion })
+        $artifact = @($sourceArtifacts | Where-Object {
+            $_.component -eq $componentName -and $_.semanticVersion -eq $source.semanticVersion -and
+            (($_.PSObject.Properties.Name -notcontains 'artifactType') -or $_.artifactType -eq 'zip')
+        })
         if ($artifact.Count -ne 1) { throw "Promotion source must contain exactly one artifact for '$componentName' version '$($source.semanticVersion)'." }
         $sha256 = [string]$artifact[0].sha256
         if ($sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "Promotion artifact for '$componentName' does not contain a valid SHA-256 digest." }
@@ -343,7 +346,47 @@ function Invoke-ComponentPackage {
     if (-not (Test-Path -LiteralPath $inputPath)) { throw "Artifact path not found for '$($Release.component)': $inputPath" }
     Compress-Archive -Path $inputPath -DestinationPath $zip -Force
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
-    [pscustomobject]@{ path = $zip; sha256 = $hash; component = $Release.component; semanticVersion = $Release.semanticVersion }
+    [pscustomobject]@{ path = $zip; sha256 = $hash; component = $Release.component; semanticVersion = $Release.semanticVersion; artifactType = 'zip' }
+}
+
+function Expand-ReleaseEnvironmentValue {
+    param([Parameter(Mandatory)][string]$Value)
+    return [regex]::Replace($Value, '\$\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}', {
+        param($match)
+        $name = $match.Groups['name'].Value
+        $resolved = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($resolved)) { throw "Environment variable '$name' is required to resolve '$Value'." }
+        return $resolved
+    })
+}
+
+function Invoke-ComponentContainerPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Release,
+        [Parameter(Mandatory)][hashtable]$Component,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+    if (-not $Component.ContainsKey('publishing')) { return $null }
+    $publishing = $Component.publishing
+    if ($publishing -isnot [System.Collections.IDictionary] -or [string]$publishing.adapter -ne 'container') { return $null }
+    if (-not $publishing.image) { throw "Container component '$($Release.component)' requires publishing.image." }
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw "Docker is required to package container component '$($Release.component)'." }
+    $image = Expand-ReleaseEnvironmentValue ([string]$publishing.image)
+    $dockerfile = if ($publishing.dockerfile) { [string]$publishing.dockerfile } else { Join-Path ([string]$Component.path) 'Dockerfile' }
+    $context = if ($publishing.context) { [string]$publishing.context } else { '.' }
+    if (-not (Test-Path -LiteralPath $dockerfile -PathType Leaf)) { throw "Dockerfile not found for '$($Release.component)': $dockerfile" }
+    if (-not (Test-Path -LiteralPath $context -PathType Container)) { throw "Docker context not found for '$($Release.component)': $context" }
+    $tag = "${image}:$($Release.semanticVersion)"
+    & docker build '--file' $dockerfile '--tag' $tag '--label' "org.opencontainers.image.version=$($Release.semanticVersion)" '--label' "org.opencontainers.image.revision=$($Release.commit)" $context 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Docker build failed for '$($Release.component)'." }
+    $componentOutput = Join-Path $OutputDirectory $Release.component
+    New-Item -ItemType Directory -Force -Path $componentOutput | Out-Null
+    $archive = Join-Path $componentOutput "$($Release.component)-v$($Release.semanticVersion).container.tar"
+    & docker save '--output' $archive $tag 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Docker image export failed for '$($Release.component)'." }
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    [pscustomobject]@{ path = $archive; sha256 = $hash; component = $Release.component; semanticVersion = $Release.semanticVersion; artifactType = 'container-image'; image = $image }
 }
 
 function Find-MSBuild {
@@ -448,4 +491,4 @@ function New-ReleaseTag {
     [pscustomobject]@{ tag = $Release.tag; status = 'created' }
 }
 
-Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentBuild,New-ReleaseTag
+Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag

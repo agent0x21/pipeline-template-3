@@ -10,6 +10,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReleasePipeline/ReleasePipeline.psd1') -Force
 
+function Expand-RegistryEnvironmentValue {
+    param([Parameter(Mandatory)][string]$Value)
+    return [regex]::Replace($Value, '\$\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\}', {
+        param($match)
+        $name = $match.Groups['name'].Value
+        $resolved = [Environment]::GetEnvironmentVariable($name)
+        if ([string]::IsNullOrWhiteSpace($resolved)) { throw "Environment variable '$name' is required to resolve '$Value'." }
+        return $resolved
+    })
+}
+
 $config = Import-ReleaseConfig $ConfigPath
 $provenance = Get-Content -LiteralPath $ProvenancePath -Raw | ConvertFrom-Json
 $sourceReleases = @($provenance.plan.releases)
@@ -25,17 +36,21 @@ $publications = foreach ($release in $targetReleases) {
     $adapter = [string]$publishing.adapter
     $endpoint = if ($publishing.ContainsKey('endpoint')) { [string]$publishing.endpoint } else { '' }
     $package = if ($publishing.ContainsKey('package')) { [string]$publishing.package } else { $null }
-    $image = if ($publishing.ContainsKey('image')) { [string]$publishing.image } else { '' }
+    $image = if ($publishing.ContainsKey('image')) { Expand-RegistryEnvironmentValue ([string]$publishing.image) } else { '' }
     $tokenEnvironmentVariable = if ($publishing.ContainsKey('tokenEnvironmentVariable')) { [string]$publishing.tokenEnvironmentVariable } else { $null }
     if ($adapter -notin @('nuget','npm','container')) { throw "Unsupported registry adapter '$adapter' for '$($release.component)'." }
     $sourceVersion = if ($release.PSObject.Properties.Name -contains 'sourceSemanticVersion') { [string]$release.sourceSemanticVersion } else { [string]$release.semanticVersion }
-    $artifact = @($artifacts | Where-Object { $_.component -eq $release.component -and $_.semanticVersion -eq $sourceVersion })
+    $artifactType = if ($adapter -eq 'container') { 'container-image' } else { 'zip' }
+    $artifact = @($artifacts | Where-Object {
+        $_.component -eq $release.component -and $_.semanticVersion -eq $sourceVersion -and
+        ((($_.PSObject.Properties.Name -notcontains 'artifactType') -and $artifactType -eq 'zip') -or $_.artifactType -eq $artifactType)
+    })
     if ($artifact.Count -ne 1) { throw "Provenance must contain exactly one artifact for '$($release.component)' $($release.semanticVersion)." }
     if ([string]$artifact[0].sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "Artifact digest for '$($release.component)' is not a SHA-256 value." }
     if (-not $endpoint -and $adapter -ne 'container') { throw "Publishing endpoint is required for '$($release.component)'." }
     if ($adapter -eq 'container' -and -not $image) { throw "Publishing image is required for '$($release.component)'." }
     $artifactPath = [string]$artifact[0].path
-    if ($adapter -ne 'container' -and -not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
         $artifactName = Split-Path -Leaf $artifactPath
         $localMatches = @(Get-ChildItem -LiteralPath (Split-Path -Parent $ProvenancePath) -Recurse -File -Filter $artifactName -ErrorAction SilentlyContinue)
         if ($localMatches.Count -eq 1) { $artifactPath = $localMatches[0].FullName }
@@ -43,6 +58,7 @@ $publications = foreach ($release in $targetReleases) {
     [pscustomobject]@{
         component = [string]$release.component
         semanticVersion = [string]$release.semanticVersion
+        sourceSemanticVersion = $sourceVersion
         channel = [string]$release.channel
         commit = [string]$release.commit
         adapter = $adapter
