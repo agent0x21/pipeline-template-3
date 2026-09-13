@@ -57,10 +57,10 @@ jobs:
         shell: pwsh
         run: |
           Install-Module powershell-yaml -Scope CurrentUser -Force
-          Install-Module Pester -Scope CurrentUser -Force
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
       - name: Test release engine
         shell: pwsh
-        run: Invoke-Pester .\eng\ci\tests -CI
+        run: .\eng\ci\Invoke-ReleasePipelineTests.ps1
       - name: Plan release
         shell: pwsh
         env:

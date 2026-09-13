@@ -24,8 +24,8 @@ Completed foundation:
 
 ### 1. First repository release
 
-- [ ] Add `.release-output/`, `release-plan.json`, and test result files to `.gitignore`.
-- [ ] Run `pnpm release-plan`, `pnpm test-ci`, and `pnpm release-package` on a clean checkout.
+- [x] Add `.release-output/`, `release-plan.json`, and test result files to `.gitignore`.
+- [x] Run `pnpm release-plan`, `pnpm test-ci`, and `pnpm release-package` on a clean checkout.
 - [ ] Review the plan and create initial component tags only after approval.
 - [ ] Run the GitHub workflow manually and verify Windows runner/tool checks.
 

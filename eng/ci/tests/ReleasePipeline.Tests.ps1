@@ -67,7 +67,7 @@ Describe 'Release packaging flow' {
             Remove-Item -LiteralPath $artifactPath -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-        $zip = Get-ChildItem $outputPath -Filter '*.zip' -Recurse
+        $zip = @(Get-ChildItem $outputPath -Filter '*.zip' -Recurse)
         $zip.Count | Should -Be 1
         (Get-Content (Join-Path $outputPath 'provenance.json') -Raw | ConvertFrom-Json).artifacts.Count | Should -Be 1
     }

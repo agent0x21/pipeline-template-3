@@ -4,10 +4,11 @@
 
 ## Local usage
 
-Install the YAML parser once, then plan and package:
+Install the YAML parser and the pinned Pester test dependency once, then plan and package:
 
 ```powershell
 Install-Module powershell-yaml -Scope CurrentUser
+Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser
 pwsh ./eng/ci/New-ReleasePlan.ps1 -Branch develop
 pwsh ./eng/ci/Invoke-ReleasePackage.ps1 -PlanPath ./release-plan.json
 ```
