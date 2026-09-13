@@ -8,3 +8,7 @@ apps/desktop/obj
 .pnpm-store/
 artifacts/
 **/dist/
+
+.release-output/
+release-plan.json
+testResults.xml

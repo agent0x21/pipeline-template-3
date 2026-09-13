@@ -9,6 +9,10 @@
     "serve-web": "pnpm dlx serve apps/web/dist",
     "build-api": "dotnet build ./apps/api",
     "start-api": "dotnet run --project ./apps/api --launch-profile http",
+    "release-plan": "pwsh ./eng/ci/New-ReleasePlan.ps1",
+    "release-package": "pwsh ./eng/ci/Invoke-ReleasePackage.ps1 -PlanPath ./release-plan.json",
+    "release-tags": "pwsh ./eng/ci/New-ReleaseTags.ps1 -PlanPath ./release-plan.json",
+    "test-ci": "pwsh -Command \"Invoke-Pester ./eng/ci/tests\"",
     "build": "pnpm build-web && dotnet build ./apps/api"
   },
   "keywords": [],

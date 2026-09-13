@@ -5,3 +5,7 @@ artifacts
 **/bin
 **/obj
 **/dist
+
+.release-output/
+release-plan.json
+testResults.xml

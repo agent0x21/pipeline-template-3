@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    branches: [develop, qa, main]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: Version bump for all changed components
+        required: false
+        type: choice
+        options: [minor, patch, major]
+        default: minor
+      component_overrides:
+        description: JSON map, for example {"api":"patch"}
+        required: false
+        type: string
+        default: '{}'
+      exact_versions:
+        description: Explicit SemVer map, for example {"api":"2.4.0"}
+        required: false
+        type: string
+        default: '{}'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git','pwsh','dotnet','node')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
+          }
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - name: Validate pnpm
+        shell: pwsh
+        run: if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { throw 'Required tool not found: pnpm' }
+      - name: Install YAML parser
+        shell: pwsh
+        run: |
+          Install-Module powershell-yaml -Scope CurrentUser -Force
+          Install-Module Pester -Scope CurrentUser -Force
+      - name: Test release engine
+        shell: pwsh
+        run: Invoke-Pester .\eng\ci\tests -CI
+      - name: Plan release
+        shell: pwsh
+        env:
+          VERSION_BUMP: ${{ inputs.version_bump || 'minor' }}
+          COMPONENT_OVERRIDES: ${{ inputs.component_overrides || '{}' }}
+          EXACT_VERSIONS: ${{ inputs.exact_versions || '{}' }}
+        run: .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS
+      - name: Build and package
+        shell: pwsh
+        run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.run_id }}
+          path: artifacts/
+      - name: Create release tags
+        shell: pwsh
+        run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-plan.json -Push
