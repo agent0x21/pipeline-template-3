@@ -1,0 +1,94 @@
+pipeline {
+  agent { label 'windows' }
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+  }
+
+  parameters {
+    string(name: 'SOURCE_JOB', description: 'Jenkins job that produced the immutable release artifact')
+    string(name: 'SOURCE_BUILD', description: 'Successful source build number')
+    choice(name: 'TARGET_CHANNEL', choices: ['rc', 'stable'], description: 'Promotion target')
+  }
+
+  environment {
+    CONFIG_PATH = '.releasepipeline.yml'
+    CI_RUN_ID = "jenkins-${env.JOB_NAME}-${env.BUILD_NUMBER}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+        powershell '''
+          $ErrorActionPreference = 'Stop'
+          git fetch --tags --force
+          Install-Module powershell-yaml -Scope CurrentUser -Force
+        '''
+      }
+    }
+
+    stage('Download immutable source artifact') {
+      steps {
+        // Requires the Jenkins Copy Artifact plugin. The release job archives artifacts/**.
+        copyArtifacts(
+          projectName: params.SOURCE_JOB,
+          selector: specific("${params.SOURCE_BUILD}"),
+          target: 'source-artifacts',
+          fingerprintArtifacts: true
+        )
+      }
+    }
+
+    stage('Plan promotion') {
+      steps {
+        powershell '''
+          .\\eng\\ci\\New-ArtifactPromotionPlan.ps1 `
+            -ProvenancePath .\\source-artifacts\\artifacts\\provenance.json `
+            -ConfigPath $env:CONFIG_PATH `
+            -TargetChannel $env:TARGET_CHANNEL `
+            -OutputPath .\\promotion-plan.json
+        '''
+      }
+    }
+
+    stage('Review promotion') {
+      steps {
+        input message: 'Review promotion-plan.json and approve tag creation', submitter: 'release-managers'
+      }
+    }
+
+    stage('Create promotion tags') {
+      steps {
+        powershell '.\\eng\\ci\\Invoke-ArtifactPromotion.ps1 -PlanPath .\\promotion-plan.json -Push'
+      }
+    }
+
+    stage('Review registry publication') {
+      steps {
+        input message: 'Approve registry publication for this promotion', submitter: 'release-managers'
+      }
+    }
+
+    stage('Publish registry artifacts') {
+      steps {
+        powershell '''
+          .\\eng\\ci\\New-RegistryPublicationPlan.ps1 `
+            -ProvenancePath .\\source-artifacts\\artifacts\\provenance.json `
+            -PromotionPlanPath .\\promotion-plan.json `
+            -ConfigPath $env:CONFIG_PATH `
+            -OutputPath .\\registry-publication-plan.json
+          .\\eng\\ci\\Publish-RegistryArtifacts.ps1 `
+            -PlanPath .\\registry-publication-plan.json `
+            -OutputPath .\\registry-publication.json
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts artifacts: 'promotion-plan.json,registry-publication-plan.json,registry-publication.json', allowEmptyArchive: true, fingerprint: true
+        }
+      }
+    }
+  }
+}
