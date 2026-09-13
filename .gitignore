@@ -1,0 +1,10 @@
+node_modules
+apps/web/node_modules
+apps/api/bin
+apps/api/obj
+apps/desktop/bin
+apps/desktop/obj
+.tools/
+.pnpm-store/
+artifacts/
+**/dist/

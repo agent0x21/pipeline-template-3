@@ -1,0 +1,7 @@
+.git
+.tools
+artifacts
+**/node_modules
+**/bin
+**/obj
+**/dist

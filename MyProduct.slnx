@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/apps/" />
+  <Folder Name="/apps/api/">
+    <Project Path="apps/api/DotNetWebAPI.Api.csproj" />
+  </Folder>
+  <Folder Name="/apps/desktop/">
+    <Project Path="apps/desktop/NativeApp.Desktop.csproj" />
+  </Folder>
+</Solution>

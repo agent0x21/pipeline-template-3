@@ -1,0 +1,26 @@
+{
+  "name": "pipeline-template-2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev-web": "pnpm --filter ./apps/web dev",
+    "build-web": "pnpm --filter ./apps/web build",
+    "serve-web": "pnpm dlx serve apps/web/dist",
+    "build-api": "dotnet build ./apps/api",
+    "start-api": "dotnet run --project ./apps/api --launch-profile http",
+    "build": "pnpm build-web && dotnet build ./apps/api"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.3.4",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.3.4",
+  "type": "module"
+}
