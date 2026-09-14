@@ -38,17 +38,24 @@ $sources = foreach ($componentName in $changed) {
     $component = $config.components[$componentName]
     $prefix = [string]$component.tagPrefix
     $candidates = foreach ($tag in (Invoke-SourceGit @('tag','--list',"$prefix/v*-$sourceChannel.*"))) {
-        if ($tag -notmatch "^$([regex]::Escape($prefix))/v.+-$sourceChannel\.\d+$") { continue }
+        if ($tag -notmatch "^$([regex]::Escape($prefix))/v(?<core>\d+\.\d+\.\d+)-$sourceChannel\.(?<sequence>\d+)$") { continue }
         $tagCommit = Invoke-SourceGit @('rev-list','-n','1',$tag) | Select-Object -First 1
-        if ($rangeCommits.Contains($tagCommit)) { [pscustomobject]@{ component = $componentName; tag = $tag; commit = $tagCommit } }
+        if ($rangeCommits.Contains($tagCommit)) {
+            [pscustomobject]@{ component = $componentName; tag = $tag; commit = $tagCommit; core = $Matches.core; sequence = [int]$Matches.sequence }
+        }
     }
     if (@($candidates).Count -eq 0) {
         throw "No $sourceChannel release tag for component '$componentName' was introduced by this branch promotion. Create a $sourceChannel release on the source branch first."
     }
-    if (@($candidates).Count -gt 1) {
-        throw "Multiple $sourceChannel release tags for component '$componentName' were introduced by this branch promotion: $((@($candidates).tag -join ', ')). Promote one candidate at a time."
+    $distinctCores = @(@($candidates).core | Sort-Object -Unique)
+    if ($distinctCores.Count -gt 1) {
+        throw "Multiple conflicting $sourceChannel release base versions for component '$componentName' were introduced by this branch promotion: $((@($candidates).tag -join ', ')). Promote one candidate at a time."
     }
-    $candidate = @($candidates)[0]
+    # Sequential beta/RC iterations of the same base version (for example beta.1 then
+    # beta.2) can legitimately land in one pushed range. That is not a conflict: the
+    # highest sequence number is the intended candidate, and the diff check below still
+    # rejects it if branch content moved on past that tag.
+    $candidate = @($candidates) | Sort-Object sequence -Descending | Select-Object -First 1
     & git '-c' "safe.directory=$((Get-Location).Path)" diff --quiet $candidate.commit $commitSha -- ([string]$component.path)
     if ($LASTEXITCODE -ne 0) {
         throw "The promoted branch changes '$componentName' after $($candidate.tag). Build a new $sourceChannel artifact from the promoted source before continuing."

@@ -134,6 +134,52 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
     }
 
+    It 'promotes the newest sequential beta tag instead of failing on a superseded predecessor' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            # Two beta iterations of the same base version both land inside the
+            # pushed range, as happens when dev accumulates beta.1 then beta.2
+            # before a single multi-commit push promotes the branch.
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'fix before second beta'
+            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Fix before second beta') | Out-Null
+            $secondBetaCommit = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.2',$secondBetaCommit) | Out-Null
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'promote the beta release'
+            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Promote candidate') | Out-Null
+
+            Push-Location $fixture.Repository
+            & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath | Out-Null
+            $sources = Get-Content $outputPath -Raw | ConvertFrom-Json
+
+            $sources.sources.Count | Should -Be 1
+            $sources.sources[0].tag | Should -Be 'app/v1.3.0-beta.2'
+        } finally { Pop-Location }
+    }
+
+    It 'rejects genuinely conflicting base versions introduced by the same branch promotion' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'apps/app/source.txt') -Value 'changed again for next base version'
+            Invoke-FixtureGit $fixture.Repository @('add','apps/app/source.txt') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Bump app for next base version') | Out-Null
+            $nextBaseCommit = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.4.0-beta.1',$nextBaseCommit) | Out-Null
+
+            Push-Location $fixture.Repository
+            { & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath } | Should -Throw '*conflicting*'
+        } finally { Pop-Location }
+    }
+
     It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
         $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun
