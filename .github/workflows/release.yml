@@ -171,6 +171,7 @@ jobs:
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
       - name: Upload immutable release artifact
+        id: upload-release-artifact
         uses: actions/upload-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
@@ -179,6 +180,11 @@ jobs:
             release-plan.json
             candidate.json
           retention-days: 90
+      - name: Link the release artifact in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-release-artifact.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the release artifact]($env:ARTIFACT_URL)"
 
   tag-candidate:
     name: "Tag candidate: ${{ needs.candidate.outputs.approval_summary }}"
@@ -268,6 +274,7 @@ jobs:
             @($manifest.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.image)`` | ``$($_.imageDigest)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload the release identity
+        id: upload-release-manifest
         uses: actions/upload-artifact@v7
         with:
           name: "release-manifest-${{ github.run_id }}"
@@ -275,6 +282,11 @@ jobs:
             release-manifest.json
             registry-publication.json
           retention-days: 90
+      - name: Link the release identity in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-release-manifest.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the release identity]($env:ARTIFACT_URL)"
 
   approve-rc:
     name: "RC approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
@@ -312,11 +324,17 @@ jobs:
         shell: pwsh
         run: .\eng\ci\Update-PromotionBranch.ps1 -Branch qa -CandidateSha '${{ needs.candidate.outputs.candidate_sha }}' -AllowMerge -Push
       - name: Upload the qa promotion record
+        id: upload-qa-promotion
         uses: actions/upload-artifact@v7
         with:
           name: "promotion-qa-${{ github.run_id }}"
           path: promotion-qa.json
           retention-days: 90
+      - name: Link the qa promotion record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-qa-promotion.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the qa promotion record]($env:ARTIFACT_URL)"
 
   deploy-qa:
     name: Deploy the candidate artifact to QA
@@ -351,11 +369,17 @@ jobs:
         shell: pwsh
         run: .\eng\ci\Invoke-EnvironmentDeployment.ps1 -ManifestPath .\release-identity\release-manifest.json -Environment qa -PublishAlias
       - name: Upload the QA deployment record
+        id: upload-qa-deployment
         uses: actions/upload-artifact@v7
         with:
           name: "deployment-qa-${{ github.run_id }}"
           path: deployment-qa.json
           retention-days: 90
+      - name: Link the QA deployment record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-qa-deployment.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the QA deployment record]($env:ARTIFACT_URL)"
 
   approve-qa:
     name: "QA approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
@@ -405,6 +429,7 @@ jobs:
         shell: pwsh
         run: .\eng\ci\New-QaApprovalTags.ps1 -ApprovedManifestPath .\approved-release-manifest.json -Push
       - name: Upload the approved release identity
+        id: upload-approved-release
         uses: actions/upload-artifact@v7
         with:
           name: "approved-release-${{ github.run_id }}"
@@ -412,6 +437,11 @@ jobs:
             approved-release-manifest.json
             qa-approval-tags.json
           retention-days: 90
+      - name: Link the approved release identity in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-approved-release.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the approved release identity]($env:ARTIFACT_URL)"
 
   promote-rc:
     name: Promote the approved artifact to the RC channel
@@ -451,6 +481,7 @@ jobs:
           .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
           .\eng\ci\Publish-PromotedImageTag.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -PromotionPlanPath .\promotion-plan.json
       - name: Upload the RC promotion record
+        id: upload-rc-promotion
         uses: actions/upload-artifact@v7
         with:
           name: "promotion-rc-${{ github.run_id }}"
@@ -459,6 +490,11 @@ jobs:
             promotion-provenance.json
             promoted-image-tags.json
           retention-days: 90
+      - name: Link the RC promotion record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-rc-promotion.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the RC promotion record]($env:ARTIFACT_URL)"
 
   approve-production:
     name: "Production approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
@@ -510,6 +546,7 @@ jobs:
           .\eng\ci\New-ManifestPromotionPlan.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -TargetChannel stable -OutputPath .\stable-promotion-plan.json
           .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\stable-promotion-plan.json -Push -OutputPath .\stable-promotion-provenance.json
       - name: Upload the main promotion record
+        id: upload-main-promotion
         uses: actions/upload-artifact@v7
         with:
           name: "promotion-main-${{ github.run_id }}"
@@ -518,6 +555,11 @@ jobs:
             stable-promotion-plan.json
             stable-promotion-provenance.json
           retention-days: 90
+      - name: Link the main promotion record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-main-promotion.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the main promotion record]($env:ARTIFACT_URL)"
 
   deploy-production:
     name: Deploy the QA-approved artifact to production
@@ -583,6 +625,7 @@ jobs:
             @($deployment.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.imageDigest)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload the production deployment record
+        id: upload-production-deployment
         uses: actions/upload-artifact@v7
         with:
           name: "deployment-production-${{ github.run_id }}"
@@ -590,3 +633,8 @@ jobs:
             deployment-production.json
             promoted-image-tags.json
           retention-days: 90
+      - name: Link the production deployment record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-production-deployment.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the production deployment record]($env:ARTIFACT_URL)"

@@ -113,6 +113,7 @@ jobs:
             @($record.components | ForEach-Object { "| $($_.component) | ``$($_.versionLabel)`` | ``$($_.archiveSha256)`` | ``$($_.imageReference)`` | ``$($_.imageDigest)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload development artifact
+        id: upload-development-artifact
         uses: actions/upload-artifact@v7
         with:
           name: "development-${{ github.run_id }}"
@@ -120,3 +121,8 @@ jobs:
             dev-artifacts/
             development-build.json
           retention-days: 7
+      - name: Link the development artifact in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-development-artifact.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the development artifact]($env:ARTIFACT_URL)"

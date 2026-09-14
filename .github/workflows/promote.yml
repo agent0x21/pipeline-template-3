@@ -75,8 +75,14 @@ jobs:
             -ApprovedManifestPath .\approved-release\approved-release-manifest.json `
             -Environment $env:TARGET_ENVIRONMENT -RequireApprovedRelease -PublishAlias
       - name: Upload the redeployment record
+        id: upload-redeployment-record
         uses: actions/upload-artifact@v7
         with:
           name: "redeployment-${{ inputs.target_environment }}-${{ github.run_id }}"
           path: "deployment-${{ inputs.target_environment }}.json"
           retention-days: 90
+      - name: Link the redeployment record in the job summary
+        shell: pwsh
+        env:
+          ARTIFACT_URL: ${{ steps.upload-redeployment-record.outputs.artifact-url }}
+        run: Add-Content $env:GITHUB_STEP_SUMMARY "`n[Download the redeployment record]($env:ARTIFACT_URL)"

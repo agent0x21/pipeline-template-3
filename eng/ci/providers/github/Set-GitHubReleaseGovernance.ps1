@@ -18,6 +18,10 @@ param(
     # deployment boundaries, not decision points.
     [string[]]$ApprovalEnvironments = @('rc-approval', 'qa-approval', 'production-approval'),
     [ValidateRange(1, 6)][int]$RequiredApprovingReviewCount = 1,
+    # Environments that build development artifacts, never release candidates. GitHub
+    # itself is made to refuse the job before it starts when the triggering branch is
+    # a promotion branch, rather than relying only on the in-workflow guard.
+    [string[]]$DevelopmentArtifactEnvironments = @('development'),
     [switch]$PreventSelfReview,
     [switch]$AllowAdministratorsToBypass,
     [switch]$PreservePromotionCommits
@@ -32,7 +36,7 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 
 function Invoke-GitHubApi {
     param(
-        [Parameter(Mandatory)][ValidateSet('GET', 'PUT', 'PATCH')][string]$Method,
+        [Parameter(Mandatory)][ValidateSet('GET', 'POST', 'PUT', 'PATCH', 'DELETE')][string]$Method,
         [Parameter(Mandatory)][string]$Endpoint,
         [object]$Body
     )
@@ -135,16 +139,35 @@ foreach ($branch in $PromotionBranches) {
 foreach ($environment in $Environments) {
     $endpoint = "repos/$Repository/environments/$([Uri]::EscapeDataString($environment))"
     $requiresApproval = $ApprovalEnvironments -contains $environment
+    $excludesPromotionBranches = $DevelopmentArtifactEnvironments -contains $environment
     $body = [pscustomobject]@{
         wait_timer = 0
         prevent_self_review = [bool]$PreventSelfReview
         reviewers = $(if ($requiresApproval) { $reviewerPayload } else { @() })
-        deployment_branch_policy = $null
+        deployment_branch_policy = $(if ($excludesPromotionBranches) { [pscustomobject]@{ protected_branches = $false; custom_branch_policies = $true } } else { $null })
     }
     $action = if ($requiresApproval) { 'create/update required reviewers' } else { 'create/update deployment environment' }
     if ($PSCmdlet.ShouldProcess("environment '$environment'", $action)) {
         Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
         Write-Host "Configured environment: $environment$(if ($requiresApproval) { ' (required reviewers)' })"
+    }
+
+    if ($excludesPromotionBranches) {
+        # Idempotent: replace whatever branch policies exist with "every branch except
+        # the promotion branches" so this job's environment can never be entered from
+        # qa or main, regardless of how it was triggered.
+        $policyEndpoint = "$endpoint/deployment-branch-policies"
+        if ($PSCmdlet.ShouldProcess("environment '$environment'", "restrict deployment branches to all branches except $($PromotionBranches -join ', ')")) {
+            $existingPolicies = (Invoke-GitHubApi -Method GET -Endpoint $policyEndpoint | ConvertFrom-Json).branch_policies
+            foreach ($policy in @($existingPolicies)) {
+                Invoke-GitHubApi -Method DELETE -Endpoint "$policyEndpoint/$($policy.id)" | Out-Null
+            }
+            Invoke-GitHubApi -Method POST -Endpoint $policyEndpoint -Body ([pscustomobject]@{ name = '*' }) | Out-Null
+            foreach ($branch in $PromotionBranches) {
+                Invoke-GitHubApi -Method POST -Endpoint $policyEndpoint -Body ([pscustomobject]@{ name = "!$branch" }) | Out-Null
+            }
+            Write-Host "Excluded promotion branches from environment: $environment ($($PromotionBranches -join ', '))"
+        }
     }
 }
 
