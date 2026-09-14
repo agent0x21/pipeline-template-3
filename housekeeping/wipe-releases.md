@@ -1,17 +1,27 @@
-From inside the repo, this deletes **all GitHub Releases** in that repository while leaving the Git tags intact:
+Delete **all GitHub Releases** while keeping the Git tags:
 
-```bash
-gh release list --limit 10000 --json tagName --jq '.[].tagName' | while read -r tag; do gh release delete "$tag" --yes; done
+```powershell
+gh release list --limit 10000 --json tagName --jq '.[].tagName' | ForEach-Object {
+    gh release delete $_ --yes
+}
 ```
 
-If you also want to delete the associated Git tags:
+Delete **all GitHub Releases and their associated Git tags**:
 
-```bash
-gh release list --limit 10000 --json tagName --jq '.[].tagName' | while read -r tag; do gh release delete "$tag" --yes --cleanup-tag; done
+```powershell
+gh release list --limit 10000 --json tagName --jq '.[].tagName' | ForEach-Object {
+    gh release delete $_ --yes --cleanup-tag
+}
 ```
 
-This is destructive and has no bulk undo, so you can preview what will be deleted first with:
+Preview the releases first:
 
-```bash
+```powershell
 gh release list --limit 10000
+```
+
+You can also use the shorter PowerShell alias `%`:
+
+```powershell
+gh release list --limit 10000 --json tagName --jq '.[].tagName' | % { gh release delete $_ --yes }
 ```

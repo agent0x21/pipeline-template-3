@@ -1,23 +1,37 @@
-From inside the repo, this deletes **all remote tags** from `origin`:
+Delete **all remote tags** from `origin`:
 
-```bash
-git tag -l | xargs -r -n 1 git push origin --delete
+```powershell
+git tag -l | ForEach-Object {
+    git push origin --delete $_
+}
 ```
 
-If you also want to remove all **local tags** afterward:
+Delete **all local tags**:
 
-```bash
-git tag -l | xargs -r git tag -d
+```powershell
+git tag -l | ForEach-Object {
+    git tag -d $_
+}
 ```
 
-To do both:
+Delete **both remote and local tags** using the same captured tag list:
 
-```bash
-git tag -l | tee /tmp/repo-tags.txt | xargs -r -n 1 git push origin --delete && xargs -r git tag -d < /tmp/repo-tags.txt
+```powershell
+$tags = git tag -l
+
+$tags | ForEach-Object {
+    git push origin --delete $_
+}
+
+$tags | ForEach-Object {
+    git tag -d $_
+}
 ```
 
-You can preview the tags first with:
+And to preview them first:
 
-```bash
+```powershell
 git tag -l
 ```
+
+The `$tags = git tag -l` version is preferable for deleting both, because after deleting local tags you no longer have the local list available.
