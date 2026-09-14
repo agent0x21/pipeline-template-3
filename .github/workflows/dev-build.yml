@@ -53,6 +53,12 @@ jobs:
           if ($env:SOURCE_BRANCH -in @('qa','main')) {
             throw "Development artifacts are for development branches. '$($env:SOURCE_BRANCH)' is a protected release branch; use the Release Candidate workflow instead."
           }
+      # pnpm's nested node_modules layout can exceed Windows' default 260-character
+      # path limit. actions/checkout cleans the workspace with `git clean` before
+      # checking out, which otherwise warns/fails on those paths from a prior run.
+      - name: Enable long path support for this workspace
+        shell: pwsh
+        run: git config --global core.longPaths true
       - uses: actions/checkout@v7
         with:
           ref: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"

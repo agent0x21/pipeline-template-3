@@ -64,6 +64,12 @@ jobs:
           if ($env:SOURCE_BRANCH -in @('qa','main')) {
             throw "A release candidate is selected from a development branch. '$($env:SOURCE_BRANCH)' is advanced by this pipeline, not used as a candidate source."
           }
+      # pnpm's nested node_modules layout can exceed Windows' default 260-character
+      # path limit. actions/checkout cleans the workspace with `git clean` before
+      # checking out, which otherwise warns/fails on those paths from a prior run.
+      - name: Enable long path support for this workspace
+        shell: pwsh
+        run: git config --global core.longPaths true
       - uses: actions/checkout@v7
         with:
           # Pin the checkout to the exact commit the dispatch resolved.
