@@ -113,73 +113,6 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
     }
 
-    It 'finds the immutable beta source for an unambiguous branch promotion' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $configPath = Join-Path $fixture.Repository 'release-config.json'
-        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
-        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
-        try {
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
-            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'promote the beta release'
-            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
-            Invoke-FixtureGit $fixture.Repository @('commit','-m','Promote candidate') | Out-Null
-
-            Push-Location $fixture.Repository
-            & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath | Out-Null
-            $sources = Get-Content $outputPath -Raw | ConvertFrom-Json
-
-            $sources.sourceChannel | Should -Be 'beta'
-            $sources.sources.Count | Should -Be 1
-            $sources.sources[0].tag | Should -Be 'app/v1.3.0-beta.1'
-        } finally { Pop-Location }
-    }
-
-    It 'promotes the newest sequential beta tag instead of failing on a superseded predecessor' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $configPath = Join-Path $fixture.Repository 'release-config.json'
-        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
-        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
-        try {
-            # Two beta iterations of the same base version both land inside the
-            # pushed range, as happens when dev accumulates beta.1 then beta.2
-            # before a single multi-commit push promotes the branch.
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
-            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'fix before second beta'
-            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
-            Invoke-FixtureGit $fixture.Repository @('commit','-m','Fix before second beta') | Out-Null
-            $secondBetaCommit = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.2',$secondBetaCommit) | Out-Null
-            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'promote the beta release'
-            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
-            Invoke-FixtureGit $fixture.Repository @('commit','-m','Promote candidate') | Out-Null
-
-            Push-Location $fixture.Repository
-            & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath | Out-Null
-            $sources = Get-Content $outputPath -Raw | ConvertFrom-Json
-
-            $sources.sources.Count | Should -Be 1
-            $sources.sources[0].tag | Should -Be 'app/v1.3.0-beta.2'
-        } finally { Pop-Location }
-    }
-
-    It 'rejects genuinely conflicting base versions introduced by the same branch promotion' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $configPath = Join-Path $fixture.Repository 'release-config.json'
-        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
-        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
-        try {
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
-            Set-Content -LiteralPath (Join-Path $fixture.Repository 'apps/app/source.txt') -Value 'changed again for next base version'
-            Invoke-FixtureGit $fixture.Repository @('add','apps/app/source.txt') | Out-Null
-            Invoke-FixtureGit $fixture.Repository @('commit','-m','Bump app for next base version') | Out-Null
-            $nextBaseCommit = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.4.0-beta.1',$nextBaseCommit) | Out-Null
-
-            Push-Location $fixture.Repository
-            { & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath } | Should -Throw '*conflicting*'
-        } finally { Pop-Location }
-    }
-
     It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
         $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun
@@ -552,3 +485,263 @@ Describe 'Registry publication planning' {
         $plan.publications[0].sha256 | Should -Be ('b' * 64)
     }
 }
+
+Describe 'Candidate commit capture' {
+    It 'accepts a checked-out HEAD that equals the captured candidate SHA' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        try {
+            Push-Location $fixture.Repository
+            Assert-CandidateCommit -ExpectedSha $fixture.Head | Should -Be $fixture.Head.ToLowerInvariant()
+        } finally { Pop-Location }
+    }
+
+    It 'fails when HEAD differs from the captured candidate SHA' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        try {
+            Push-Location $fixture.Repository
+            { Assert-CandidateCommit -ExpectedSha $fixture.InitialCommit } | Should -Throw '*does not equal the captured candidate SHA*'
+        } finally { Pop-Location }
+    }
+
+    It 'refuses an ambiguous candidate SHA' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        try {
+            Push-Location $fixture.Repository
+            { Assert-CandidateCommit -ExpectedSha $fixture.Head.Substring(0, 7) } | Should -Throw '*could not be determined unambiguously*'
+        } finally { Pop-Location }
+    }
+}
+
+Describe 'Release identity' {
+    BeforeAll {
+        $script:candidate = 'a' * 40
+        $script:digest = 'sha256:' + ('c' * 64)
+        $script:plan = @{ branch = 'dev'; channel = 'beta'; commit = $script:candidate; releases = @(
+            @{ component = 'api'; semanticVersion = '1.18.0-beta.1'; channel = 'beta'; tag = 'api/v1.18.0-beta.1'; commit = $script:candidate }
+        ) } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $script:provenance = @{ artifacts = @(
+            @{ component = 'api'; semanticVersion = '1.18.0-beta.1'; artifactType = 'zip'; sha256 = ('d' * 64); path = 'api.zip' }
+            @{ component = 'api'; semanticVersion = '1.18.0-beta.1'; artifactType = 'container-image'; sha256 = ('e' * 64); path = 'api.tar'; image = 'ghcr.io/acme/orders' }
+        ) } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $script:publication = @{ publications = @(
+            @{ component = 'api'; adapter = 'container'; semanticVersion = '1.18.0-beta.1'; image = 'ghcr.io/acme/orders'; imageDigest = $script:digest }
+        ) } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    }
+
+    It 'binds the release version, candidate SHA, and immutable artifact digest together' {
+        $manifest = New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $script:publication -CandidateSha $script:candidate
+        $manifest.candidateSha | Should -Be $script:candidate
+        $manifest.releaseId | Should -Be "beta-$($script:candidate.Substring(0,12))"
+        $manifest.components[0].imageDigest | Should -Be $script:digest
+        $manifest.components[0].archiveSha256 | Should -Be ('d' * 64)
+    }
+
+    It 'refuses a manifest whose artifact was built from another commit' {
+        { New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $script:publication -CandidateSha ('b' * 40) } |
+            Should -Throw '*does not equal the candidate SHA*'
+    }
+
+    It 'refuses a container release that has no published registry digest' {
+        { New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $null -CandidateSha $script:candidate } |
+            Should -Throw '*container publication record*'
+    }
+
+    It 'accepts a deployment whose digest equals the approved digest' {
+        $manifest = New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $script:publication -CandidateSha $script:candidate
+        Assert-ReleaseIdentity -Manifest $manifest -ApprovedManifest $manifest | Should -BeTrue
+    }
+
+    It 'fails a production deployment whose digest differs from the approved digest' {
+        $approved = New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $script:publication -CandidateSha $script:candidate
+        $tampered = $approved | ConvertTo-Json -Depth 16 | ConvertFrom-Json
+        $tampered.components[0].imageDigest = 'sha256:' + ('f' * 64)
+        { Assert-ReleaseIdentity -Manifest $tampered -ApprovedManifest $approved } | Should -Throw '*does not equal the QA-approved digest*'
+    }
+
+    It 'fails when an approved component is missing from the deployment' {
+        $approved = New-ReleaseManifest -Plan $script:plan -Provenance $script:provenance -RegistryPublication $script:publication -CandidateSha $script:candidate
+        $partial = $approved | ConvertTo-Json -Depth 16 | ConvertFrom-Json
+        $partial.components = @()
+        { Assert-ReleaseIdentity -Manifest $partial -ApprovedManifest $approved } | Should -Throw '*is missing from the deployment manifest*'
+    }
+}
+
+Describe 'Protected branch advancement' {
+    It 'prefers a fast-forward and never rewrites the candidate commit' {
+        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) -CurrentIsAncestorOfCandidate $true | Should -Be 'fast-forward'
+    }
+
+    It 'treats an identical or already-containing branch as needing no update' {
+        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('a' * 40) | Should -Be 'up-to-date'
+        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) -CandidateIsAncestorOfCurrent $true | Should -Be 'already-contains'
+    }
+
+    It 'requires a merge when the branch advanced independently' {
+        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) | Should -Be 'merge'
+        Get-BranchAdvanceStrategy -CurrentSha '' -CandidateSha ('b' * 40) | Should -Be 'create'
+    }
+
+    It 'fast-forwards qa onto the candidate commit without changing its SHA' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
+        & git init --bare $remote | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($fixture.InitialCommit):refs/heads/qa") | Out-Null
+        try {
+            Push-Location $fixture.Repository
+            & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch qa -CandidateSha $fixture.Head -Push -OutputPath (Join-Path $fixture.Repository 'promotion-qa.json') | Out-Null
+            $record = Get-Content (Join-Path $fixture.Repository 'promotion-qa.json') -Raw | ConvertFrom-Json
+            $record.strategy | Should -Be 'fast-forward'
+            $record.resultSha | Should -Be $fixture.Head.ToLowerInvariant()
+            $record.mergeCommit | Should -BeNullOrEmpty
+            (@(Invoke-FixtureGit $fixture.Repository @('ls-remote','origin','refs/heads/qa')) -join "`n") | Should -BeLike "$($fixture.Head)*"
+        } finally { Pop-Location }
+    }
+
+    It 'preserves the approved commit in ancestry when main has advanced' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
+        & git init --bare $remote | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
+        # main moves on independently with an unrelated change.
+        Invoke-FixtureGit $fixture.Repository @('checkout','-b','main-work',$fixture.InitialCommit) | Out-Null
+        Set-Content -LiteralPath (Join-Path $fixture.Repository 'hotfix.txt') -Value 'independent hotfix'
+        Invoke-FixtureGit $fixture.Repository @('add','hotfix.txt') | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('commit','-m','Independent hotfix on main') | Out-Null
+        $mainHead = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
+        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($mainHead):refs/heads/main") | Out-Null
+        try {
+            Push-Location $fixture.Repository
+            { & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch main -CandidateSha $fixture.Head -Push -OutputPath (Join-Path $fixture.Repository 'p.json') } |
+                Should -Throw '*cannot fast-forward*'
+
+            & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch main -CandidateSha $fixture.Head -AllowMerge -Push -OutputPath (Join-Path $fixture.Repository 'promotion-main.json') | Out-Null
+            $record = Get-Content (Join-Path $fixture.Repository 'promotion-main.json') -Raw | ConvertFrom-Json
+            $record.strategy | Should -Be 'merge'
+            $record.approvedSha | Should -Be $fixture.Head.ToLowerInvariant()
+            $record.mergeCommit | Should -Not -BeNullOrEmpty
+            # The QA-approved commit is unchanged and contained by the promotion commit.
+            Invoke-FixtureGit $fixture.Repository @('merge-base','--is-ancestor',$fixture.Head,$record.mergeCommit) | Out-Null
+            $LASTEXITCODE | Should -Be 0
+        } finally { Pop-Location }
+    }
+
+    It 'fails when the promotion branch moved unexpectedly' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
+        & git init --bare $remote | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
+        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($fixture.InitialCommit):refs/heads/qa") | Out-Null
+        try {
+            Push-Location $fixture.Repository
+            { & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch qa -CandidateSha $fixture.Head -ExpectedSha ('9' * 40) -Push } |
+                Should -Throw '*changed during promotion*'
+        } finally { Pop-Location }
+    }
+}
+
+Describe 'Manifest-driven promotion' {
+    It 'creates the next RC for the candidate commit and requires an RC before stable' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $manifest = [pscustomobject]@{
+            schema = 'release-manifest/v1'
+            releaseId = 'beta-test'
+            candidateSha = $fixture.Head.ToLowerInvariant()
+            components = @([pscustomobject]@{ component = 'app'; semanticVersion = '1.3.0-beta.1'; tag = 'app/v1.3.0-beta.1'; imageDigest = $null; archiveSha256 = ('d' * 64) })
+        }
+        try {
+            Push-Location $fixture.Repository
+            { New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel stable } |
+                Should -Throw '*beta -> rc -> stable*'
+
+            $rc = New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel rc
+            $rc.promotions[0].semanticVersion | Should -Be '1.3.0-rc.1'
+            $rc.promotions[0].commit | Should -Be $fixture.Head.ToLowerInvariant()
+
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-rc.1',$fixture.Head) | Out-Null
+            $stable = New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel stable
+            $stable.promotions[0].semanticVersion | Should -Be '1.3.0'
+            $stable.promotions[0].tag | Should -Be 'app/v1.3.0'
+            # Re-running the RC promotion must reuse the RC already on this commit.
+            (New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel rc).promotions[0].semanticVersion | Should -Be '1.3.0-rc.1'
+        } finally { Pop-Location }
+    }
+}
+
+Describe 'Deployment guardrails' {
+    It 'refuses a production deployment that cannot prove QA approval' {
+        $manifestPath = Join-Path $TestDrive 'release-manifest.json'
+        @{ schema = 'release-manifest/v1'; releaseId = 'beta-1'; candidateSha = ('a' * 40); components = @() } |
+            ConvertTo-Json -Depth 8 | Set-Content $manifestPath
+        { & "$PSScriptRoot/../Invoke-EnvironmentDeployment.ps1" -ConfigPath "$PSScriptRoot/../../../.releasepipeline.yml" -ManifestPath $manifestPath -Environment production -RequireApprovedRelease } |
+            Should -Throw '*requires the QA-approved release manifest*'
+    }
+
+    It 'refuses a deployment that is handed something other than a release identity' {
+        $planPath = Join-Path $TestDrive 'not-a-manifest.json'
+        @{ schema = 'release-plan/v1' } | ConvertTo-Json | Set-Content $planPath
+        { & "$PSScriptRoot/../Invoke-EnvironmentDeployment.ps1" -ConfigPath "$PSScriptRoot/../../../.releasepipeline.yml" -ManifestPath $planPath -Environment qa } |
+            Should -Throw '*not a release manifest*'
+    }
+
+    It 'fails when application build output is present in a deployment job' {
+        $configPath = Join-Path $TestDrive 'deploy-config.json'
+        New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'apps/app') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'out/app') | Out-Null
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } } } |
+            ConvertTo-Json -Depth 8 | Set-Content $configPath
+        try {
+            Push-Location $TestDrive
+            { & "$PSScriptRoot/../Assert-NoApplicationBuild.ps1" -ConfigPath $configPath -AdditionalPath @() } |
+                Should -Throw '*never rebuild the application*'
+            Remove-Item -Recurse -Force (Join-Path $TestDrive 'out')
+            & "$PSScriptRoot/../Assert-NoApplicationBuild.ps1" -ConfigPath $configPath -AdditionalPath @() | Out-Null
+        } finally { Pop-Location }
+    }
+
+    It 'rejects a deployment environment that declares a build step' {
+        $configPath = Join-Path $TestDrive 'environment-config.json'
+        New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'apps/app') | Out-Null
+        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }
+           environments = @{ production = @{ build = @{ command = 'dotnet publish' } } }
+           components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } } } |
+            ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*must not define a build step*'
+    }
+}
+
+Describe 'QA approval records' {
+    It 'refuses to record an approval for a digest QA did not run' {
+        $manifestPath = Join-Path $TestDrive 'approval-manifest.json'
+        $deploymentPath = Join-Path $TestDrive 'approval-deployment.json'
+        $candidate = 'a' * 40
+        @{ schema = 'release-manifest/v1'; releaseId = 'beta-1'; candidateSha = $candidate; components = @(
+            @{ component = 'api'; semanticVersion = '1.18.0-beta.1'; imageDigest = 'sha256:' + ('c' * 64) }
+        ) } | ConvertTo-Json -Depth 8 | Set-Content $manifestPath
+        @{ schema = 'environment-deployment/v1'; environment = 'qa'; releaseId = 'beta-1'; candidateSha = $candidate; components = @(
+            @{ component = 'api'; imageDigest = 'sha256:' + ('f' * 64) }
+        ) } | ConvertTo-Json -Depth 8 | Set-Content $deploymentPath
+        { & "$PSScriptRoot/../New-QaApprovalRecord.ps1" -ManifestPath $manifestPath -QaDeploymentPath $deploymentPath -OutputPath (Join-Path $TestDrive 'approved.json') } |
+            Should -Throw '*Approval cannot be recorded*'
+    }
+
+    It 'records the approval against the SHA, release, and digest QA ran' {
+        $manifestPath = Join-Path $TestDrive 'approval-manifest-ok.json'
+        $deploymentPath = Join-Path $TestDrive 'approval-deployment-ok.json'
+        $approvedPath = Join-Path $TestDrive 'approved-ok.json'
+        $candidate = 'a' * 40
+        $digest = 'sha256:' + ('c' * 64)
+        @{ schema = 'release-manifest/v1'; releaseId = 'beta-1'; candidateSha = $candidate; channel = 'beta'; sourceBranch = 'dev'; repository = 'acme/orders'; ciRunId = '42'; generatedAt = '2026-01-01T00:00:00Z'; components = @(
+            @{ component = 'api'; semanticVersion = '1.18.0-beta.1'; imageDigest = $digest }
+        ) } | ConvertTo-Json -Depth 8 | Set-Content $manifestPath
+        @{ schema = 'environment-deployment/v1'; environment = 'qa'; releaseId = 'beta-1'; candidateSha = $candidate; components = @(
+            @{ component = 'api'; imageDigest = $digest }
+        ) } | ConvertTo-Json -Depth 8 | Set-Content $deploymentPath
+        & "$PSScriptRoot/../New-QaApprovalRecord.ps1" -ManifestPath $manifestPath -QaDeploymentPath $deploymentPath -ApprovedBy 'release-manager' -OutputPath $approvedPath | Out-Null
+        $approved = Get-Content $approvedPath -Raw | ConvertFrom-Json
+        $approved.candidateSha | Should -Be $candidate
+        $approved.components[0].imageDigest | Should -Be $digest
+        $approved.qaApproval.approvedBy | Should -Be 'release-manager'
+    }
+}
+

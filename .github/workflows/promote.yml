@@ -1,124 +1,82 @@
-name: Promote Release
+# Recovery path: redeploy an already-approved release identity.
+#
+# Normal promotion is automatic and lives in release.yml. This workflow exists for
+# recovery only - for example a QA or production deployment that failed after the
+# artifact was approved. It re-deploys the exact digest recorded by that run. It
+# never builds, never re-versions, and never moves a source branch.
+name: Redeploy Approved Release
 
 on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: GitHub Actions run ID containing the release artifact
+        description: Release Candidate run ID that produced the approved release
         required: true
         type: string
-      target_channel:
-        description: Promotion target channel
+      target_environment:
+        description: Environment to redeploy to
         required: true
         type: choice
-        options: [rc, stable]
+        options: [qa, production]
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: "promotion-${{ inputs.target_channel }}"
+  group: "redeploy-${{ inputs.target_environment }}"
   cancel-in-progress: false
 
 jobs:
-  promote:
+  redeploy:
     runs-on: self-hosted
     timeout-minutes: 30
-    # Manual promotion is reserved for recovery. Keep the same release-manager
-    # approval boundary as the branch-driven promotion workflow before it can
-    # create tags or GitHub releases.
-    environment: release-${{ inputs.target_channel }}
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-      - name: Install YAML parser
-        shell: pwsh
-        run: Install-Module powershell-yaml -Scope CurrentUser -Force
-      - name: Download immutable source artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: "release-${{ inputs.source_run_id }}"
-          run-id: "${{ inputs.source_run_id }}"
-          github-token: "${{ github.token }}"
-          path: source-artifacts
-      - name: Plan promotion
-        shell: pwsh
-        run: .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath .\source-artifacts\artifacts\provenance.json -TargetChannel '${{ inputs.target_channel }}'
-      - name: Summarize promotion plan
-        shell: pwsh
-        run: |
-          $plan = Get-Content .\promotion-plan.json -Raw | ConvertFrom-Json
-          @(
-            '## Promotion summary'
-            ''
-            "Source run: ``${{ inputs.source_run_id }}``"
-            "Target channel: ``${{ inputs.target_channel }}``"
-            ''
-            '| Component | Version | Tag |'
-            '| --- | --- | --- |'
-            @($plan.promotions | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
-          ) | Add-Content $env:GITHUB_STEP_SUMMARY
-      - name: Create promotion tags
-        shell: pwsh
-        run: .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
-      - name: Upload promotion record
-        uses: actions/upload-artifact@v7
-        with:
-          name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
-          path: |
-            source-artifacts/
-            promotion-plan.json
-            promotion-provenance.json
-          retention-days: 30
-      - name: Publish GitHub release metadata
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: "${{ github.token }}"
-        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\promotion-plan.json
-      - name: Upload deployable GitHub release assets
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: "${{ github.token }}"
-        run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\promotion-plan.json -ProvenancePath .\source-artifacts\artifacts\provenance.json
-
-  publish:
-    needs: promote
-    runs-on: self-hosted
-    timeout-minutes: 30
-    environment: ${{ inputs.target_channel }}
+    environment: ${{ inputs.target_environment }}
     permissions:
       actions: read
       contents: read
-      id-token: write
       packages: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-      - name: Download promotion record
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Prove this job is not building the application
+        shell: pwsh
+        run: .\eng\ci\Assert-NoApplicationBuild.ps1
+      - name: Download the persisted release identity
         uses: actions/download-artifact@v7
         with:
-          name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
-          path: promotion-artifacts
+          name: "release-manifest-${{ inputs.source_run_id }}"
+          run-id: "${{ inputs.source_run_id }}"
+          github-token: "${{ github.token }}"
+          path: release-identity
+      - name: Download the QA-approved release identity
+        uses: actions/download-artifact@v7
+        with:
+          name: "approved-release-${{ inputs.source_run_id }}"
+          run-id: "${{ inputs.source_run_id }}"
+          github-token: "${{ github.token }}"
+          path: approved-release
       - name: Authenticate to GitHub Container Registry
         uses: ./.github/actions/ghcr-login
         with:
           actor: "${{ github.actor }}"
           token: "${{ github.token }}"
-      - name: Publish registry artifacts
+      - name: Redeploy the approved digest
         shell: pwsh
+        env:
+          TARGET_ENVIRONMENT: "${{ inputs.target_environment }}"
         run: |
-          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
-          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
-      - name: Upload registry publication record
+          .\eng\ci\Invoke-EnvironmentDeployment.ps1 `
+            -ManifestPath .\release-identity\release-manifest.json `
+            -ApprovedManifestPath .\approved-release\approved-release-manifest.json `
+            -Environment $env:TARGET_ENVIRONMENT -RequireApprovedRelease -PublishAlias
+      - name: Upload the redeployment record
         uses: actions/upload-artifact@v7
         with:
-          name: "registry-publication-${{ github.run_id }}"
-          path: registry-publication.json
-          retention-days: 30
+          name: "redeployment-${{ inputs.target_environment }}-${{ github.run_id }}"
+          path: "deployment-${{ inputs.target_environment }}.json"
+          retention-days: 90

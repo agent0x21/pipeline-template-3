@@ -2,6 +2,47 @@
 
 `ReleasePipeline` is the provider-neutral PowerShell core for this repository's CI/CD framework. It uses Git tags as the canonical version source and treats each configured component as independently releasable.
 
+Read [RELEASE-STANDARD.md](RELEASE-STANDARD.md) first: it defines the difference between a development build, a release candidate, a QA-approved release, and a production release, and what causes each transition.
+
+## Workflows
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | Every push to a non-release branch, every pull request | Lints, builds, and runs the release-engine tests. Produces no artifact and creates no tag. |
+| `.github/workflows/dev-build.yml` | Manual dispatch, or the `build:dev-artifact` pull-request label | Builds a development artifact `dev-<shortSha>` for one branch. Not a release candidate. |
+| `.github/workflows/release.yml` | Manual dispatch from a development branch | The full release candidate lifecycle: build once, publish, advance `qa`, deploy QA, QA approval, advance `main`, deploy production. |
+| `.github/workflows/promote.yml` | Manual dispatch | Recovery only: redeploys an already-approved release identity to QA or production. Never builds. |
+
+Nobody types a commit SHA in any of these. The SHA is captured from the trigger context and verified against the checked-out `HEAD` before anything is built.
+
+### Requesting a development artifact
+
+Run the **Development Artifact** workflow on your branch, or label a pull request `build:dev-artifact`. Leave `components` empty to build everything, or pass a comma-separated subset. The result is traceable to branch, SHA, artifact version, and registry digest:
+
+```text
+branch:  dev/new-checkout
+git_sha: 93abc12...
+artifact: ghcr.io/agent0x21/pipeline-template-3-api:dev-93abc12ab34c
+digest:   sha256:1234...
+```
+
+Development builds are grouped per branch, so concurrent branches never block each other, and a newer request on the same branch supersedes the older one.
+
+### Creating a release candidate
+
+Run the **Release Candidate** workflow from the development branch you want to ship. The dispatch context supplies the SHA. The candidate scope is computed from the merge base with `origin/qa`, so a candidate covers everything that branch adds to the source currently under QA validation.
+
+From that point the artifact is immutable. `release-manifest.json` records the release identifier, the candidate SHA, and each component's archive checksum and registry manifest digest; every later stage consumes that document instead of a branch tip.
+
+Local equivalents:
+
+```powershell
+pnpm verify-candidate -ExpectedSha <sha>
+pnpm release-plan -Branch dev
+pnpm release-package
+pnpm release-manifest -PlanPath ./release-plan.json -ProvenancePath ./artifacts/provenance.json -CandidateSha <sha>
+```
+
 ## Local usage
 
 Install the YAML parser and the pinned Pester test dependency once, then plan and package:
@@ -31,9 +72,9 @@ Configuration loading rejects duplicate tag prefixes, invalid or escaping compon
 
 Tag pushes are atomic and retry transient push failures up to three times. If another runner creates the same tag first, the provisional local tag is removed; a matching remote commit is treated as an idempotent rerun, while a different remote commit fails safely and requires a newly reviewed plan.
 
-The GitHub Actions adapter retains workflow artifacts for 30 days and publishes an idempotent GitHub release record for each tagged component. It also attaches the verified deployable ZIP to that component's GitHub release. For push-triggered runs it compares GitHub's pre-push SHA to the new tip, so a multi-commit branch promotion releases every changed component in the pushed range. The provider-specific metadata and asset scripts use `GITHUB_TOKEN`; their behavior is intentionally kept outside the provider-neutral release module.
+The GitHub Actions adapter retains release workflow artifacts for 90 days and publishes an idempotent GitHub release record for each tagged component. It also attaches the verified deployable ZIP to that component's GitHub release. The provider-specific metadata and asset scripts use `GITHUB_TOKEN`; their behavior is intentionally kept outside the provider-neutral release module.
 
-The release workflow uploads the generated plan with the tested artifacts, then pauses at the protected `release-beta`, `release-rc`, or `release-stable` environment before creating tags. The approval job names list the components and tags being approved, and the workflow summary includes the channel, commit, versions, and tags. When the plan has no releases, the workflow retains the empty plan and provenance for auditability but skips tag creation, GitHub release assets, and registry publication. Reviewers can inspect `release-plan.json` in the workflow artifact and approve the deployment from the Actions run page. Tag creation and GitHub release metadata use a separate least-privilege job with `contents: write`; the build/package job has read-only repository permissions.
+Each stage runs with least privilege: the build/package job has read-only repository permissions, tagging and branch promotion jobs add `contents: write`, and only the publication and deployment jobs receive `packages: write` and `id-token: write`.
 
 Configure the GitHub governance from an authenticated `gh` session. This is idempotent and does not accept or print a token:
 
@@ -45,29 +86,31 @@ pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1 `
   -PreventSelfReview
 ```
 
-The script protects `dev`, `qa`, and `main` with pull-request reviews, stale-review dismissal, last-push approval, conversation resolution, and no force pushes/deletions. It creates or updates `release-beta`, `release-rc`, `release-stable`, `beta`, `rc`, and `stable` with the selected users/teams as required reviewers. Preview the API changes first with `-WhatIf`. On GitHub Free, required environment reviewers require a public repository; private repositories need a compatible paid plan.
+The script applies two different policies. Development branches (`dev` by default) keep pull-request reviews, stale-review dismissal, last-push approval, conversation resolution, the `validate` status check, and no force pushes or deletions: that is where humans work. Promotion branches (`qa` and `main`) are owned by the pipeline — pushes are restricted to the `github-actions` automation app (override with `-AutomationApp`), force pushes and deletions stay disabled, and no pull request is required, because the only writer is the promotion job advancing the branch onto the QA-approved commit.
 
-### Preserve the approved source commit through QA and production
+It also creates the `development`, `beta`, `qa`, `qa-approval`, `rc`, and `production` environments. Only `qa-approval` carries required reviewers by default (change this with `-ApprovalEnvironments`), so the single human gate in the release is the QA sign-off on a specific release identity. Preview the API changes first with `-WhatIf`. On GitHub Free, required environment reviewers require a public repository; private repositories need a compatible paid plan. Classic `restrictions` on a branch require an organization-owned repository; on a user-owned repository, use a repository ruleset with the automation app as a bypass actor instead.
 
-For the branch-driven promotion path, merge the approved `dev` change into `qa` and the approved `qa` change into `main` with a regular **merge commit**. Do not squash or rebase either promotion PR: those strategies create replacement commits, so `main` no longer contains the commit identified by the beta/RC tag and immutable artifact provenance.
+`-PreservePromotionCommits` remains available to disable squash and rebase merging repository-wide. It is no longer required for traceability — the pipeline advances `qa` and `main` itself and never squashes or cherry-picks the approved commit — but it keeps developer merges into `dev` from rewriting commits that a candidate may already reference.
 
-`Find-BranchPromotionSources.ps1` enforces this relationship before it creates an RC or stable promotion: the tagged source commit must be an ancestor of the destination branch tip, and the promoted component must be unchanged after that commit. This means a stable tag identifies the same source commit that QA approved, while `main` contains that commit in its history (a fast-forward is also valid when GitHub can perform one).
+### Preserving the approved source commit through QA and production
 
-To configure GitHub so PR authors cannot choose squash or rebase merges, run the governance command with `-PreservePromotionCommits` (use `-WhatIf` first):
+`Update-PromotionBranch.ps1` advances a protected branch onto the approved commit:
 
-```powershell
-pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1 `
-  -Repository 'OWNER/REPOSITORY' `
-  -Reviewer @('reviewer-user', 'my-org/release-managers') `
-  -PreventSelfReview `
-  -PreservePromotionCommits
-```
+* **Fast-forward** when the branch is an ancestor of the candidate. This is preferred: the QA-approved SHA is unchanged.
+* **Already contains / up to date** when the approved commit is already in the branch. No ref update.
+* **Merge commit** when the branch advanced independently. The branch tip is the first parent and the approved commit the second, so the approved SHA stays in ancestry and remains the artifact source identity. The artifact is never rebuilt from the merge commit, and `promotion-<branch>.json` records the relationship between `approvedSha` and `mergeCommit`.
 
-This repository-level setting permits merge commits and disables squash and rebase merging. The manual **Promote Release** workflow remains a recovery path; use the branch-triggered workflow for normal QA-to-production promotion when commit-to-`main` traceability is required.
+Cherry-pick, squash, and rebase are never used for promotion because they create a new SHA. Without `-AllowMerge` a divergent branch fails the release instead of being forced. The push is a plain, non-forced ref update from a commit that descends from the branch head that was read at the start, so a competing promotion causes a rejection rather than an overwrite; `-ExpectedSha` adds an explicit expected-head assertion on top.
 
-Promotion consumes an existing release artifact's `provenance.json`, validates its component/version/digest entries, and creates tags for the same commit without invoking a build. Only `beta -> rc` and `rc -> stable` are allowed. A push to `qa` or `main` now performs this automatically: it finds the one beta/RC tag introduced by that promotion, verifies that the component content still matches, then downloads the immutable GitHub Release assets and provenance. Multiple candidates, a missing source release, or changed component content stop safely for an explicit release-manager decision. The **Promote Release** workflow remains available for an explicit source-run promotion and recovery scenario.
+Promotion of the artifact itself never involves a build. `New-ManifestPromotionPlan.ps1` derives the RC and stable versions from the persisted release identity and always targets the candidate SHA; `Invoke-ArtifactPromotion.ps1` creates the tags; `Publish-PromotedImageTag.ps1` applies the promoted registry tag to the approved digest and re-reads the digest afterwards to prove it did not change. Only `beta -> rc -> stable` is allowed, and stable requires an RC tag on the approved commit. `New-ArtifactPromotionPlan.ps1` remains for provenance-driven recovery promotions.
 
-Registry publication is opt-in per component through `publishing.adapter`: `nuget`, `npm`, or `container`. Generate a publication plan with `pnpm registry-plan -ProvenancePath ...`; for promotion, also pass `-PromotionPlanPath promotion-plan.json`. The plan carries the immutable source artifact digest while using the target RC/stable version, without copying credentials. `pnpm registry-publish` invokes `dotnet nuget push`, `npm publish --provenance`, or `docker push`. Authenticate those tools in the provider workflow using a short-lived/OIDC credential or a preconfigured credential helper; never put tokens in command-line arguments. The workflows publish only after their `beta`, `rc`, or `stable` environment approval and grant `id-token: write` only to the publication job.
+Registry publication is opt-in per component through `publishing.adapter`: `nuget`, `npm`, or `container`. Generate a publication plan with `pnpm registry-plan -ProvenancePath ...`; for promotion, also pass `-PromotionPlanPath promotion-plan.json`. The plan carries the immutable source artifact digest while using the target RC/stable version, without copying credentials. `pnpm registry-publish` invokes `dotnet nuget push`, `npm publish --provenance`, or `docker push`, and for container pushes it resolves and records the registry manifest digest. Authenticate those tools in the provider workflow using a short-lived/OIDC credential or a preconfigured credential helper; never put tokens in command-line arguments. `id-token: write` is granted only to publication jobs.
+
+### Deployment
+
+`Invoke-EnvironmentDeployment.ps1` is the only thing that deploys, and it contains no build path. It resolves each component by `image@sha256:...` from the release manifest, pulls that exact digest to prove the registry serves it, optionally publishes the environment's convenience alias (`qa`, `production`), and then invokes the environment's `deploy.command` from `.releasepipeline.yml` with `RELEASE_ENVIRONMENT`, `RELEASE_ID`, `RELEASE_GIT_SHA`, `RELEASE_COMPONENT`, `RELEASE_VERSION`, `RELEASE_IMAGE`, `RELEASE_IMAGE_DIGEST`, and `RELEASE_IMAGE_REFERENCE` exported. With no `deploy.command` configured, the step records a verified digest resolution and nothing else — wire your deployment target in there.
+
+Production additionally passes `-RequireApprovedRelease -ApprovedManifestPath`, so the release fails unless the built identity and the QA-approved identity match on release id, candidate SHA, component set, versions, archive checksums, and artifact digests. An environment that declares a `build` key is rejected at configuration load, and `Assert-NoApplicationBuild.ps1` fails the production job if any component's package output is present in the workspace.
 
 The API is configured as a GHCR container component. Packaging builds `apps/api/Dockerfile`, saves its versioned image as a SHA-256-provenanced `.container.tar` artifact, and the publication job reloads that artifact before pushing it. Run `pnpm test-container-api` to build and smoke-test the API container locally.
 
@@ -84,3 +127,5 @@ See [MIGRATION.md](MIGRATION.md) for moving from repository-global tags to compo
 See [templates/README.md](templates/README.md) for copyable single-application and polyglot-monorepo `.releasepipeline.yml` starting points.
 
 See [RECOVERY.md](RECOVERY.md) for safe handling of partial tags, metadata failures, registry retries, and promotion/artifact-transfer failures.
+
+See [RELEASE-STANDARD.md](RELEASE-STANDARD.md) for the release standard itself and the full guardrail table.

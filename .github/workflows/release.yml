@@ -1,9 +1,16 @@
-name: Release
+# Release candidate lifecycle: select -> build once -> QA -> approve -> production.
+#
+# Invariants enforced by this workflow:
+#   * The candidate SHA is captured from the trigger context and verified against
+#     the checked-out HEAD. Nobody types or re-enters a SHA.
+#   * The release artifact is built exactly once, in the `candidate` job.
+#   * Every later job consumes release-manifest.json (git SHA + version + immutable
+#     artifact digest). No job re-reads the head of qa or main to decide what to ship.
+#   * QA and production deploy the same digest, and production proves the equality
+#     before deploying and never runs a build step.
+name: Release Candidate
 
 on:
-  push:
-    branches: [dev]
-    paths-ignore: [".github/**"]
   workflow_dispatch:
     inputs:
       version_bump:
@@ -31,22 +38,36 @@ on:
 permissions:
   contents: read
 
+# One release candidate at a time, repository wide. Two candidates can never race
+# to move qa or main, and a second dispatch queues behind the first.
 concurrency:
-  group: "release-${{ github.ref }}"
+  group: release-candidate
   cancel-in-progress: false
 
 jobs:
-  release:
+  candidate:
+    name: Create release candidate
     runs-on: self-hosted
     timeout-minutes: 60
     outputs:
+      candidate_sha: ${{ steps.candidate.outputs.candidate_sha }}
       channel: ${{ steps.release-channel.outputs.channel }}
       has_releases: ${{ steps.release-channel.outputs.has_releases }}
       approval_summary: ${{ steps.release-channel.outputs.approval_summary }}
-      run_id: ${{ github.run_id }}
     steps:
+      - name: Reject protected release branches as candidate sources
+        shell: pwsh
+        env:
+          SOURCE_BRANCH: "${{ github.ref_name }}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_BRANCH -in @('qa','main')) {
+            throw "A release candidate is selected from a development branch. '$($env:SOURCE_BRANCH)' is advanced by this pipeline, not used as a candidate source."
+          }
       - uses: actions/checkout@v7
         with:
+          # Pin the checkout to the exact commit the dispatch resolved.
+          ref: "${{ github.sha }}"
           fetch-depth: 0
           fetch-tags: true
       - name: Validate runner
@@ -65,11 +86,20 @@ jobs:
           if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
             throw 'Required tool not found: pnpm'
           }
-      - name: Install YAML parser
+      - name: Install release engine dependencies
         shell: pwsh
         run: |
           Install-Module powershell-yaml -Scope CurrentUser -Force
           Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Capture and verify the candidate commit
+        id: candidate
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: "${{ github.sha }}"
+          SOURCE_BRANCH: "${{ github.ref_name }}"
+        run: |
+          .\eng\ci\Assert-CandidateCommit.ps1 -ExpectedSha $env:CANDIDATE_SHA -Branch $env:SOURCE_BRANCH
+          "candidate_sha=$($env:CANDIDATE_SHA)" >> $env:GITHUB_OUTPUT
       - name: Test release engine
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePipelineTests.ps1
@@ -80,87 +110,104 @@ jobs:
           COMPONENT_OVERRIDES: "${{ inputs.component_overrides || '{}' }}"
           EXACT_VERSIONS: "${{ inputs.exact_versions || '{}' }}"
           RELEASE_ALL: "${{ inputs.release_all || false }}"
-          PUSH_BASE_REF: "${{ github.event.before }}"
         run: |
-          # A push can advance a branch by more than one commit. Compare the full
-          # pushed range so promotions such as dev -> qa -> main include every
-          # changed component, not only the commit immediately before HEAD.
-          $baseRef = if ($env:PUSH_BASE_REF -and $env:PUSH_BASE_REF -notmatch '^0+$') { $env:PUSH_BASE_REF } else { 'HEAD~1' }
+          # The candidate scope is "what changed since the source currently under QA
+          # validation", resolved from the merge base rather than from a branch tip.
+          $baseRef = 'HEAD~1'
+          git -c "safe.directory=$((Get-Location).Path)" rev-parse --verify --quiet origin/qa *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $mergeBase = git -c "safe.directory=$((Get-Location).Path)" merge-base HEAD origin/qa
+            if ($LASTEXITCODE -eq 0 -and $mergeBase) { $baseRef = ($mergeBase | Select-Object -First 1).Trim() }
+          }
+          Write-Host "Candidate scope base ref: $baseRef"
           .\eng\ci\New-ReleasePlan.ps1 -Branch '${{ github.ref_name }}' -BaseRef $baseRef -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')
       - name: Expose release channel
         id: release-channel
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $plan = Get-Content .\release-plan.json -Raw | ConvertFrom-Json
+          # A dispatch is an explicit request for a candidate. Both "this branch is
+          # not a release source" and "nothing changed" are errors here, not silent
+          # no-ops, so the requester gets a reason instead of an empty green run.
+          if (-not $plan.channel) {
+            throw "Branch '$($plan.branch)' has no configured release channel in .releasepipeline.yml. Select a release candidate from a configured release source branch."
+          }
+          if (@($plan.releases).Count -eq 0) {
+            throw 'No configured component changed relative to the source currently under QA validation, so there is nothing to release. Use the release_all input to force a full release.'
+          }
           "channel=$($plan.channel)" >> $env:GITHUB_OUTPUT
           $hasReleases = if (@($plan.releases).Count -gt 0) { 'true' } else { 'false' }
           "has_releases=$hasReleases" >> $env:GITHUB_OUTPUT
           $approvalSummary = @($plan.releases | ForEach-Object { "$($_.component) $($_.tag)" }) -join ', '
           "approval_summary=$approvalSummary" >> $env:GITHUB_OUTPUT
           @(
-            '## Release approval summary'
+            '## Release candidate'
             ''
             "Run ID: ``$env:GITHUB_RUN_ID``"
             "Channel: ``$($plan.channel)``"
-            "Commit: ``$($plan.commit)``"
+            "Candidate commit: ``$($plan.commit)``"
             ''
             '| Component | Version | Tag |'
             '| --- | --- | --- |'
             @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
-      - name: Build and package
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and package the release artifact exactly once
         shell: pwsh
         run: .\eng\ci\Invoke-ReleasePackage.ps1 -PlanPath .\release-plan.json
-      - name: Upload artifacts
+      - name: Upload immutable release artifact
         uses: actions/upload-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
           path: |
             artifacts/
             release-plan.json
-          retention-days: 30
+            candidate.json
+          retention-days: 90
 
-  create-tags:
-    name: "Approve tags and GitHub releases: ${{ needs.release.outputs.approval_summary }}"
-    needs: release
-    if: needs.release.outputs.has_releases == 'true'
+  tag-candidate:
+    name: "Tag candidate: ${{ needs.candidate.outputs.approval_summary }}"
+    needs: candidate
     runs-on: self-hosted
     timeout-minutes: 30
-    environment: release-${{ needs.release.outputs.channel }}
     permissions:
       actions: read
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
           fetch-depth: 0
           fetch-tags: true
-      - name: Download reviewed release plan
-        uses: actions/download-artifact@v7
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
           path: release-artifacts
-      - name: Create release tags
+      - name: Verify the tagging checkout is the candidate commit
+        shell: pwsh
+        run: .\eng\ci\Assert-CandidateCommit.ps1 -ExpectedSha '${{ needs.candidate.outputs.candidate_sha }}'
+      - name: Create immutable candidate tags
         shell: pwsh
         run: .\eng\ci\New-ReleaseTags.ps1 -PlanPath .\release-artifacts\release-plan.json -Push
-      - name: Publish GitHub release metadata
+      - name: Publish GitHub release metadata and assets
         shell: pwsh
         env:
           GITHUB_TOKEN: "${{ github.token }}"
-        run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-artifacts\release-plan.json
-      - name: Upload deployable GitHub release assets
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: "${{ github.token }}"
-        run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\release-artifacts\release-plan.json -ProvenancePath .\release-artifacts\artifacts\provenance.json
+        run: |
+          .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\release-artifacts\release-plan.json
+          .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\release-artifacts\release-plan.json -ProvenancePath .\release-artifacts\artifacts\provenance.json
 
-  publish:
-    name: "Approve registry publication: ${{ needs.release.outputs.approval_summary }}"
-    needs: [release, create-tags]
-    if: needs.release.outputs.has_releases == 'true' && needs.create-tags.result == 'success'
+  publish-candidate:
+    name: "Publish candidate artifact: ${{ needs.candidate.outputs.approval_summary }}"
+    needs: [candidate, tag-candidate]
     runs-on: self-hosted
     timeout-minutes: 30
-    environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
+    environment: beta
     permissions:
       actions: read
       contents: read
@@ -169,9 +216,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
           fetch-depth: 1
-      - name: Download immutable release artifact
-        uses: actions/download-artifact@v7
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
         with:
           name: "release-${{ github.run_id }}"
           path: release-artifacts
@@ -180,14 +230,318 @@ jobs:
         with:
           actor: "${{ github.actor }}"
           token: "${{ github.token }}"
-      - name: Publish registry artifacts
+      - name: Publish the artifact and resolve its immutable digest
         shell: pwsh
         run: |
           .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\release-artifacts\artifacts\provenance.json -OutputPath .\registry-publication-plan.json
           .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
-      - name: Upload registry publication record
+      - name: Persist the release identity
+        shell: pwsh
+        run: |
+          .\eng\ci\New-ReleaseManifest.ps1 `
+            -PlanPath .\release-artifacts\release-plan.json `
+            -ProvenancePath .\release-artifacts\artifacts\provenance.json `
+            -RegistryPublicationPath .\registry-publication.json `
+            -CandidateSha '${{ needs.candidate.outputs.candidate_sha }}'
+          $manifest = Get-Content .\release-manifest.json -Raw | ConvertFrom-Json
+          @(
+            '## Release identity'
+            ''
+            "Release: ``$($manifest.releaseId)``"
+            "Git SHA: ``$($manifest.candidateSha)``"
+            ''
+            '| Component | Version | Image | Digest |'
+            '| --- | --- | --- | --- |'
+            @($manifest.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.image)`` | ``$($_.imageDigest)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload the release identity
         uses: actions/upload-artifact@v7
         with:
-          name: "registry-publication-${{ github.run_id }}"
-          path: registry-publication.json
-          retention-days: 30
+          name: "release-manifest-${{ github.run_id }}"
+          path: |
+            release-manifest.json
+            registry-publication.json
+          retention-days: 90
+
+  advance-qa:
+    name: Advance qa to the candidate commit
+    needs: [candidate, publish-candidate]
+    runs-on: self-hosted
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Advance qa without rewriting the candidate commit
+        shell: pwsh
+        run: .\eng\ci\Update-PromotionBranch.ps1 -Branch qa -CandidateSha '${{ needs.candidate.outputs.candidate_sha }}' -AllowMerge -Push
+      - name: Upload the qa promotion record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "promotion-qa-${{ github.run_id }}"
+          path: promotion-qa.json
+          retention-days: 90
+
+  deploy-qa:
+    name: Deploy the candidate artifact to QA
+    needs: [candidate, publish-candidate, advance-qa]
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: qa
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          fetch-depth: 1
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
+        with:
+          name: "release-manifest-${{ github.run_id }}"
+          path: release-identity
+      - name: Authenticate to GitHub Container Registry
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
+      # There is deliberately no build step in this job: QA deploys the digest that
+      # the candidate job produced.
+      - name: Deploy the immutable artifact digest
+        shell: pwsh
+        run: .\eng\ci\Invoke-EnvironmentDeployment.ps1 -ManifestPath .\release-identity\release-manifest.json -Environment qa -PublishAlias
+      - name: Upload the QA deployment record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "deployment-qa-${{ github.run_id }}"
+          path: deployment-qa.json
+          retention-days: 90
+
+  approve-qa:
+    name: "QA approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
+    needs: [candidate, publish-candidate, deploy-qa]
+    runs-on: self-hosted
+    timeout-minutes: 4320
+    # Required reviewers on this environment are the QA gate. The approval applies
+    # to the release identity below, not to "whatever is on the qa branch".
+    environment: qa-approval
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
+        with:
+          name: "release-manifest-${{ github.run_id }}"
+          path: release-identity
+      - uses: actions/download-artifact@v7
+        with:
+          name: "deployment-qa-${{ github.run_id }}"
+          path: qa-deployment
+      - name: Record the approval against the release identity
+        shell: pwsh
+        run: |
+          .\eng\ci\New-QaApprovalRecord.ps1 -ManifestPath .\release-identity\release-manifest.json -QaDeploymentPath .\qa-deployment\deployment-qa.json
+          $approved = Get-Content .\approved-release-manifest.json -Raw | ConvertFrom-Json
+          @(
+            '## QA-approved release'
+            ''
+            "Release: ``$($approved.releaseId)``"
+            "Approved commit: ``$($approved.candidateSha)``"
+            "Approved by: ``$($approved.qaApproval.approvedBy)``"
+            ''
+            '| Component | Version | Approved digest |'
+            '| --- | --- | --- |'
+            @($approved.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.imageDigest)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Mark the approved commit with immutable qa-approved tags
+        shell: pwsh
+        run: .\eng\ci\New-QaApprovalTags.ps1 -ApprovedManifestPath .\approved-release-manifest.json -Push
+      - name: Upload the approved release identity
+        uses: actions/upload-artifact@v7
+        with:
+          name: "approved-release-${{ github.run_id }}"
+          path: |
+            approved-release-manifest.json
+            qa-approval-tags.json
+          retention-days: 90
+
+  promote-rc:
+    name: Promote the approved artifact to the RC channel
+    needs: [candidate, approve-qa]
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: rc
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
+        with:
+          name: "approved-release-${{ github.run_id }}"
+          path: approved-release
+      - name: Authenticate to GitHub Container Registry
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
+      # No build, no package, no docker build: the RC tag is applied to the digest
+      # that QA approved.
+      - name: Plan and apply the RC promotion
+        shell: pwsh
+        run: |
+          .\eng\ci\New-ManifestPromotionPlan.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -TargetChannel rc
+          .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
+          .\eng\ci\Publish-PromotedImageTag.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -PromotionPlanPath .\promotion-plan.json
+      - name: Upload the RC promotion record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "promotion-rc-${{ github.run_id }}"
+          path: |
+            promotion-plan.json
+            promotion-provenance.json
+            promoted-image-tags.json
+          retention-days: 90
+
+  promote-main:
+    name: Promote the approved source commit into main
+    needs: [candidate, approve-qa, promote-rc]
+    runs-on: self-hosted
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - uses: actions/download-artifact@v7
+        with:
+          name: "approved-release-${{ github.run_id }}"
+          path: approved-release
+      - name: Advance main to the approved commit
+        shell: pwsh
+        run: |
+          # Fast-forward is preferred so the QA-approved SHA is unchanged. If main
+          # has advanced, a merge commit preserves it in ancestry; the artifact is
+          # never rebuilt from the merge commit.
+          .\eng\ci\Update-PromotionBranch.ps1 -Branch main -CandidateSha '${{ needs.candidate.outputs.candidate_sha }}' -AllowMerge -Push
+      - name: Create immutable stable release tags on the approved commit
+        shell: pwsh
+        run: |
+          .\eng\ci\New-ManifestPromotionPlan.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -TargetChannel stable -OutputPath .\stable-promotion-plan.json
+          .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\stable-promotion-plan.json -Push -OutputPath .\stable-promotion-provenance.json
+      - name: Upload the main promotion record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "promotion-main-${{ github.run_id }}"
+          path: |
+            promotion-main.json
+            stable-promotion-plan.json
+            stable-promotion-provenance.json
+          retention-days: 90
+
+  deploy-production:
+    name: Deploy the QA-approved artifact to production
+    needs: [candidate, publish-candidate, approve-qa, promote-main]
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ needs.candidate.outputs.candidate_sha }}"
+          # Tags are needed to derive the stable promotion from the approved commit.
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Prove production is not building the application
+        shell: pwsh
+        run: .\eng\ci\Assert-NoApplicationBuild.ps1
+      - uses: actions/download-artifact@v7
+        with:
+          name: "release-manifest-${{ github.run_id }}"
+          path: release-identity
+      - uses: actions/download-artifact@v7
+        with:
+          name: "approved-release-${{ github.run_id }}"
+          path: approved-release
+      - name: Authenticate to GitHub Container Registry
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
+      - name: Apply the stable image tag to the approved digest
+        shell: pwsh
+        run: |
+          .\eng\ci\New-ManifestPromotionPlan.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -TargetChannel stable -OutputPath .\stable-promotion-plan.json
+          .\eng\ci\Publish-PromotedImageTag.ps1 -ManifestPath .\approved-release\approved-release-manifest.json -PromotionPlanPath .\stable-promotion-plan.json
+      - name: Deploy the QA-approved digest
+        shell: pwsh
+        run: |
+          .\eng\ci\Invoke-EnvironmentDeployment.ps1 `
+            -ManifestPath .\release-identity\release-manifest.json `
+            -ApprovedManifestPath .\approved-release\approved-release-manifest.json `
+            -Environment production -RequireApprovedRelease -PublishAlias
+      - name: Summarize the production release
+        shell: pwsh
+        run: |
+          $deployment = Get-Content .\deployment-production.json -Raw | ConvertFrom-Json
+          @(
+            '## Production release'
+            ''
+            "Release: ``$($deployment.releaseId)``"
+            "Git SHA: ``$($deployment.candidateSha)``"
+            'Rebuilt: `false`'
+            ''
+            '| Component | Version | Deployed digest |'
+            '| --- | --- | --- |'
+            @($deployment.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.imageDigest)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload the production deployment record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "deployment-production-${{ github.run_id }}"
+          path: |
+            deployment-production.json
+            promoted-image-tags.json
+          retention-days: 90

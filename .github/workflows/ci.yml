@@ -1,0 +1,57 @@
+# Normal development CI.
+#
+# Runs on every push to a development branch and on every pull request. It builds
+# and validates, but it never produces a deployable artifact, never creates a Git
+# tag, and never publishes to a registry. Creating a deployable development
+# artifact is an explicit developer action (see dev-build.yml); creating a release
+# candidate is a separate gate again (see release.yml).
+name: CI
+
+on:
+  push:
+    branches-ignore: [qa, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Per-branch group: unrelated development branches never block or cancel each other.
+concurrency:
+  group: "ci-${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git','pwsh','dotnet','node')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
+          }
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.3.4
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: |
+          Install-Module powershell-yaml -Scope CurrentUser -Force
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Test release engine
+        shell: pwsh
+        run: .\eng\ci\Invoke-ReleasePipelineTests.ps1
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint and build web
+        run: |
+          pnpm --filter ./apps/web lint
+          pnpm --filter ./apps/web build
+      - name: Build API
+        run: dotnet build ./apps/api -c Release

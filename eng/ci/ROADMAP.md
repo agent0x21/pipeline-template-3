@@ -4,7 +4,7 @@ This roadmap turns `prompt/main-prompt.md` into incremental, verifiable work. Up
 
 ## Current status
 
-**Current focus:** Roadmap complete; validate provider adapters and keep recovery guidance current as registries are adopted.
+**Current focus:** Deterministic promotion is implemented end to end. Next: wire real deployment targets into `environments.*.deploy.command`, and confirm the branch/ruleset changes on the live repository.
 
 Completed foundation:
 
@@ -53,6 +53,19 @@ Completed foundation:
 - [x] Add migration guidance for repository-global tags and bootstrap versions.
 - [x] Provide reusable templates for single applications and polyglot monorepos.
 - [x] Define recovery for partial component releases and publication/deployment retries.
+
+### 5. Deterministic, automatically promoted releases
+
+- [x] Separate normal CI, on-demand development artifacts, and release candidates into distinct workflows.
+- [x] Capture the candidate SHA from the trigger context and verify it against the checked-out `HEAD`.
+- [x] Persist a `release-manifest.json` release identity (SHA + version + immutable artifact digest) and consume it in every later stage.
+- [x] Resolve and record the registry manifest digest at publication time.
+- [x] Advance `qa` and `main` automatically by fast-forward, or by a merge commit that preserves the approved SHA in ancestry.
+- [x] Gate QA approval on the specific release identity rather than on a branch head.
+- [x] Prove digest equality between QA and production, and fail production if any build output is present.
+- [x] Restrict `qa`/`main` writes to the automation identity and serialize release candidates.
+- [ ] Wire concrete deployment targets into `environments.*.deploy.command` for QA and production.
+- [ ] Apply the branch protections/rulesets on the live repository and confirm the automation identity can advance `qa` and `main`.
 
 ## Definition of done
 

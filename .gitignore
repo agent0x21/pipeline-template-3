@@ -12,7 +12,22 @@ artifacts/
 **/dist/
 
 .release-output/
+dev-artifacts/
 release-plan.json
 promotion-plan.json
 promotion-provenance.json
+stable-promotion-plan.json
+stable-promotion-provenance.json
+candidate.json
+development-build.json
+release-manifest.json
+approved-release-manifest.json
+qa-approval-tags.json
+promoted-image-tags.json
+registry-publication.json
+registry-publication-plan.json
+promotion-qa.json
+promotion-main.json
+deployment-qa.json
+deployment-production.json
 testResults.xml

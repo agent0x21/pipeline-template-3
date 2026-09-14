@@ -48,6 +48,18 @@ function Test-ReleaseConfig {
         if ($channel -notin @('stable','beta','rc')) { throw "Branch '$branch' must specify stable, beta, or rc as its channel." }
     }
 
+    if ($Config.ContainsKey('environments') -and $Config.environments) {
+        if ($Config.environments -isnot [System.Collections.IDictionary]) { throw 'Configuration environments must be a mapping.' }
+        foreach ($environment in $Config.environments.Keys) {
+            $environmentConfig = $Config.environments[$environment]
+            if ($environmentConfig -isnot [System.Collections.IDictionary]) { throw "Environment '$environment' must be a mapping." }
+            if ($environmentConfig.ContainsKey('aliasTag') -and [string]::IsNullOrWhiteSpace([string]$environmentConfig.aliasTag)) { throw "Environment '$environment' aliasTag must not be empty." }
+            # A deployment target may never build the application: it receives an
+            # already-published immutable digest and supplies configuration only.
+            if ($environmentConfig.ContainsKey('build')) { throw "Environment '$environment' must not define a build step. Deployments consume the immutable release artifact." }
+        }
+    }
+
     $tagPrefixes = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($name in $Config.components.Keys) {
         if ([string]::IsNullOrWhiteSpace([string]$name)) { throw 'Component names must not be empty.' }
@@ -507,4 +519,314 @@ function New-ReleaseTag {
     [pscustomobject]@{ tag = $Release.tag; status = 'created' }
 }
 
-Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,Get-ChangedComponents,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag
+function Test-CommitSha {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
+    return $Value -match '^[0-9a-f]{40}$'
+}
+
+function Assert-CandidateCommit {
+    <#
+        The candidate SHA is captured from the trigger context, never typed by a
+        human. This is the boundary that proves the working tree actually is that
+        commit before anything is built from it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ExpectedSha, [string]$Commit = 'HEAD')
+    $expected = $ExpectedSha.Trim().ToLowerInvariant()
+    if (-not (Test-CommitSha $expected)) {
+        throw "The candidate commit SHA could not be determined unambiguously: '$ExpectedSha' is not a full 40-character Git object name."
+    }
+    $head = (Get-Git @('rev-parse', $Commit) | Select-Object -First 1).Trim().ToLowerInvariant()
+    if ($head -ne $expected) {
+        throw "Checked-out HEAD '$head' does not equal the captured candidate SHA '$expected'. Refusing to build a release candidate from a different commit."
+    }
+    return $expected
+}
+
+function Get-ShortSha {
+    param([Parameter(Mandatory)][string]$Sha)
+    if (-not (Test-CommitSha $Sha.ToLowerInvariant())) { throw "Cannot shorten '$Sha': a full 40-character Git object name is required." }
+    return $Sha.Substring(0, 12).ToLowerInvariant()
+}
+
+function Get-PushedImageDigest {
+    <#
+        The registry manifest digest - not a tag - is the authoritative artifact
+        identity. It is resolved from the local daemon after the push, so the value
+        recorded is the one the registry accepted.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$Tag)
+    $reference = "${Image}:$Tag"
+    $output = & docker inspect '--format' '{{json .RepoDigests}}' $reference 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Unable to resolve the registry digest for '$reference': $($output -join ' ')" }
+    $digests = @((($output | ForEach-Object { [string]$_ }) -join '') | ConvertFrom-Json)
+    $matching = @($digests | Where-Object { ([string]$_).StartsWith("$Image@sha256:", [StringComparison]::OrdinalIgnoreCase) })
+    if ($matching.Count -ne 1) { throw "Expected exactly one registry digest for '$reference' but found $($matching.Count). Push the image before resolving its digest." }
+    $digest = (([string]$matching[0]) -split '@', 2)[1].ToLowerInvariant()
+    if ($digest -notmatch '^sha256:[0-9a-f]{64}$') { throw "Registry digest for '$reference' is not a SHA-256 manifest digest: $digest" }
+    return $digest
+}
+
+function New-ReleaseManifest {
+    <#
+        The release manifest is the durable release identity. Every stage after the
+        candidate build consumes this document instead of re-reading a mutable
+        branch, a floating tag, or the current registry state.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Plan,
+        [Parameter(Mandatory)][object]$Provenance,
+        [object]$RegistryPublication,
+        [Parameter(Mandatory)][string]$CandidateSha,
+        [string]$RunId = '',
+        [string]$Repository = ''
+    )
+    $candidate = $CandidateSha.Trim().ToLowerInvariant()
+    if (-not (Test-CommitSha $candidate)) { throw "Release manifest requires a full candidate commit SHA, got '$CandidateSha'." }
+    $releases = @($Plan.releases)
+    if ($releases.Count -eq 0) { throw 'Release manifest requires at least one release.' }
+    if ([string]$Plan.commit -ne $candidate) { throw "Release plan commit '$($Plan.commit)' does not equal the candidate SHA '$candidate'." }
+
+    $artifacts = @($Provenance.artifacts)
+    $publications = if ($RegistryPublication) { @($RegistryPublication.publications) } else { @() }
+
+    $components = foreach ($release in $releases) {
+        $name = [string]$release.component
+        if ([string]$release.commit -ne $candidate) { throw "Release for '$name' was built from '$($release.commit)', not from the candidate SHA '$candidate'." }
+        $version = [string]$release.semanticVersion
+
+        $archive = @($artifacts | Where-Object {
+            $_.component -eq $name -and $_.semanticVersion -eq $version -and
+            (($_.PSObject.Properties.Name -notcontains 'artifactType') -or $_.artifactType -eq 'zip')
+        })
+        if ($archive.Count -ne 1) { throw "Release manifest requires exactly one deployable archive for '$name' $version; found $($archive.Count)." }
+        $archiveSha = ([string]$archive[0].sha256).ToLowerInvariant()
+        if ($archiveSha -notmatch '^[0-9a-f]{64}$') { throw "Archive checksum for '$name' is not a SHA-256 value." }
+
+        $containerArtifact = @($artifacts | Where-Object { $_.component -eq $name -and $_.semanticVersion -eq $version -and ($_.PSObject.Properties.Name -contains 'artifactType') -and $_.artifactType -eq 'container-image' })
+        $image = $null; $imageDigest = $null; $imageSha256 = $null
+        if ($containerArtifact.Count -gt 1) { throw "Release manifest requires at most one container image for '$name' $version." }
+        if ($containerArtifact.Count -eq 1) {
+            $image = [string]$containerArtifact[0].image
+            $imageSha256 = ([string]$containerArtifact[0].sha256).ToLowerInvariant()
+            $publication = @($publications | Where-Object { $_.component -eq $name -and $_.adapter -eq 'container' })
+            if ($publication.Count -ne 1) { throw "Release manifest requires exactly one container publication record for '$name'; found $($publication.Count). Publish the image before writing the manifest." }
+            $recorded = $publication[0]
+            if ($recorded.PSObject.Properties.Name -notcontains 'imageDigest') { throw "Container publication for '$name' did not record a registry digest." }
+            $imageDigest = ([string]$recorded.imageDigest).ToLowerInvariant()
+            if ($imageDigest -notmatch '^sha256:[0-9a-f]{64}$') { throw "Container publication for '$name' did not record a SHA-256 manifest digest." }
+        }
+
+        [pscustomobject]@{
+            component = $name
+            semanticVersion = $version
+            channel = [string]$release.channel
+            tag = [string]$release.tag
+            archiveSha256 = $archiveSha
+            image = $image
+            imageDigest = $imageDigest
+            imageArchiveSha256 = $imageSha256
+        }
+    }
+
+    [pscustomobject]@{
+        schema = 'release-manifest/v1'
+        releaseId = "$([string]$Plan.channel)-$(Get-ShortSha $candidate)"
+        candidateSha = $candidate
+        channel = [string]$Plan.channel
+        sourceBranch = [string]$Plan.branch
+        repository = $Repository
+        ciRunId = $RunId
+        generatedAt = [DateTime]::UtcNow.ToString('o')
+        components = @($components)
+    }
+}
+
+function Assert-ReleaseIdentity {
+    <#
+        Digest equality between what QA approved and what another environment is
+        about to receive. Anything that cannot be proven equal fails the release.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Manifest, [Parameter(Mandatory)][object]$ApprovedManifest)
+    if ([string]$Manifest.candidateSha -ne [string]$ApprovedManifest.candidateSha) {
+        throw "Release identity mismatch: candidate SHA '$($Manifest.candidateSha)' does not equal the approved SHA '$($ApprovedManifest.candidateSha)'."
+    }
+    if ([string]$Manifest.releaseId -ne [string]$ApprovedManifest.releaseId) {
+        throw "Release identity mismatch: release '$($Manifest.releaseId)' does not equal the approved release '$($ApprovedManifest.releaseId)'."
+    }
+    $approved = @{}
+    foreach ($component in @($ApprovedManifest.components)) { $approved[[string]$component.component] = $component }
+    $present = @(@($Manifest.components) | ForEach-Object { [string]$_.component })
+    foreach ($name in $approved.Keys) {
+        if ($present -notcontains $name) { throw "Release identity mismatch: approved component '$name' is missing from the deployment manifest." }
+    }
+    foreach ($component in @($Manifest.components)) {
+        $name = [string]$component.component
+        if (-not $approved.ContainsKey($name)) { throw "Release identity mismatch: component '$name' was not part of the approved release." }
+        $expected = $approved[$name]
+        if ([string]$component.semanticVersion -ne [string]$expected.semanticVersion) { throw "Release identity mismatch for '$name': version '$($component.semanticVersion)' does not equal approved '$($expected.semanticVersion)'." }
+        if ([string]$component.archiveSha256 -ne [string]$expected.archiveSha256) { throw "Release identity mismatch for '$name': archive checksum does not equal the QA-approved checksum." }
+        if ([string]$component.imageDigest -ne [string]$expected.imageDigest) { throw "Release identity mismatch for '$name': artifact digest '$($component.imageDigest)' does not equal the QA-approved digest '$($expected.imageDigest)'." }
+    }
+    return $true
+}
+
+function New-ManifestPromotionPlan {
+    <#
+        Derives the RC/stable promotion from the persisted release identity instead
+        of from the current head of a mutable branch. Every promotion targets the
+        candidate SHA the artifact was built from, and the beta -> rc -> stable
+        ladder is enforced against tags on that commit.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][object]$Manifest,
+        [Parameter(Mandatory)][ValidateSet('rc','stable')][string]$TargetChannel
+    )
+    $candidateSha = ([string]$Manifest.candidateSha).ToLowerInvariant()
+    if (-not (Test-CommitSha $candidateSha)) { throw "The release manifest does not carry a full candidate commit SHA." }
+    $components = @($Manifest.components)
+    if ($components.Count -eq 0) { throw 'The release manifest does not contain any components to promote.' }
+
+    $promotions = foreach ($entry in $components) {
+        $name = [string]$entry.component
+        if (-not $Config.components.ContainsKey($name)) { throw "The release manifest references unknown component '$name'." }
+        $component = $Config.components[$name]
+        $prefix = [string]$component.tagPrefix
+        $source = ConvertFrom-SemVer ([string]$entry.semanticVersion)
+        if ($source.Channel -ne 'beta') { throw "Component '$name' is at channel '$($source.Channel)'. A release manifest always records the candidate build, which must be a beta artifact." }
+        $core = ConvertTo-SemVer $source.Major $source.Minor $source.Patch '' 0
+
+        if ($TargetChannel -eq 'rc') {
+            $sequence = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | ForEach-Object {
+                if ($_ -match '-rc\.(?<n>\d+)$') { [int]$Matches.n }
+            } | Measure-Object -Maximum).Maximum
+            if (-not $sequence) { $sequence = 0 }
+            $existing = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | Where-Object {
+                (Get-Git @('rev-list','-n','1',$_) | Select-Object -First 1) -eq $candidateSha
+            })
+            # Re-running an approved release must not mint a second RC for the same commit.
+            $targetVersion = if ($existing.Count -ge 1) { ($existing | Sort-Object -Descending | Select-Object -First 1) -replace "^$([regex]::Escape($prefix))/v", '' } else { ConvertTo-SemVer $source.Major $source.Minor $source.Patch 'rc' ($sequence + 1) }
+        } else {
+            $rcForCommit = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | Where-Object {
+                (Get-Git @('rev-list','-n','1',$_) | Select-Object -First 1) -eq $candidateSha
+            })
+            if ($rcForCommit.Count -eq 0) {
+                throw "Component '$name' has no RC tag on the approved commit '$candidateSha'. Promotion must follow beta -> rc -> stable."
+            }
+            $targetVersion = $core
+        }
+
+        [pscustomobject]@{
+            component = $name
+            commit = $candidateSha
+            channel = $TargetChannel
+            semanticVersion = $targetVersion
+            tag = "$prefix/v$targetVersion"
+            sourceChannel = 'beta'
+            sourceSemanticVersion = [string]$entry.semanticVersion
+            sourceTag = [string]$entry.tag
+            sourceImageDigest = [string]$entry.imageDigest
+            sourceArchiveSha256 = [string]$entry.archiveSha256
+        }
+    }
+    [pscustomobject]@{
+        generatedAt = [DateTime]::UtcNow.ToString('o')
+        releaseId = [string]$Manifest.releaseId
+        candidateSha = $candidateSha
+        targetChannel = $TargetChannel
+        promotions = @($promotions)
+    }
+}
+
+function Get-BranchAdvanceStrategy {
+    <#
+        Decides how a protected source branch may be advanced onto the candidate
+        commit without ever rewriting that commit. Pure decision logic; the caller
+        supplies the ancestry facts and performs the Git work.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$CurrentSha,
+        [Parameter(Mandatory)][string]$CandidateSha,
+        [bool]$CurrentIsAncestorOfCandidate,
+        [bool]$CandidateIsAncestorOfCurrent
+    )
+    if ([string]::IsNullOrWhiteSpace($CurrentSha)) { return 'create' }
+    if ($CurrentSha.ToLowerInvariant() -eq $CandidateSha.ToLowerInvariant()) { return 'up-to-date' }
+    if ($CandidateIsAncestorOfCurrent) { return 'already-contains' }
+    if ($CurrentIsAncestorOfCandidate) { return 'fast-forward' }
+    return 'merge'
+}
+
+function Invoke-DevelopmentComponentPackage {
+    <#
+        Development artifacts are deliberately not release artifacts: they are keyed
+        by branch and SHA rather than by SemVer, and they never enter the promotion
+        plan schema.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Release,
+        [Parameter(Mandatory)][string]$VersionLabel,
+        [Parameter(Mandatory)][string]$OutputDirectory
+    )
+    $componentOutput = Join-Path $OutputDirectory $Release.component
+    New-Item -ItemType Directory -Force -Path $componentOutput | Out-Null
+    $zip = Join-Path $componentOutput "$($Release.component)-$VersionLabel.zip"
+    $artifactPath = if ($Release.PSObject.Properties.Name -contains 'artifactPath') { [string]$Release.artifactPath } else { [string]$Release.path }
+    $inputPath = Join-Path (Get-Location) $artifactPath
+    if (-not (Test-Path -LiteralPath $inputPath)) { throw "Artifact path not found for '$($Release.component)': $inputPath" }
+    Compress-Archive -Path $inputPath -DestinationPath $zip -Force
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+    [pscustomobject]@{ path = $zip; sha256 = $hash; component = $Release.component; versionLabel = $VersionLabel; artifactType = 'zip' }
+}
+
+function Invoke-DevelopmentContainerBuild {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][pscustomobject]$Release,
+        [Parameter(Mandatory)][hashtable]$Component,
+        [Parameter(Mandatory)][string]$VersionLabel,
+        [Parameter(Mandatory)][string]$CommitSha,
+        [switch]$Push
+    )
+    if (-not $Component.ContainsKey('publishing')) { return $null }
+    $publishing = $Component.publishing
+    if ($publishing -isnot [System.Collections.IDictionary] -or [string]$publishing.adapter -ne 'container') { return $null }
+    if (-not $publishing.image) { throw "Container component '$($Release.component)' requires publishing.image." }
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw "Docker is required to build the development container for '$($Release.component)'." }
+    $image = Expand-ReleaseEnvironmentValue ([string]$publishing.image)
+    $dockerfile = if ($publishing.dockerfile) { [string]$publishing.dockerfile } else { Join-Path ([string]$Component.path) 'Dockerfile' }
+    $context = if ($publishing.context) { [string]$publishing.context } else { '.' }
+    if (-not (Test-Path -LiteralPath $dockerfile -PathType Leaf)) { throw "Dockerfile not found for '$($Release.component)': $dockerfile" }
+    if (-not (Test-Path -LiteralPath $context -PathType Container)) { throw "Docker context not found for '$($Release.component)': $context" }
+    $tag = "${image}:$VersionLabel"
+    $arguments = @(
+        'build', '--file', $dockerfile, '--tag', $tag,
+        '--label', "org.opencontainers.image.version=0.0.0-$VersionLabel",
+        '--label', "org.opencontainers.image.revision=$CommitSha",
+        '--build-arg', "DOTNET_Version=0.0.0-$VersionLabel",
+        '--build-arg', 'DOTNET_VersionPrefix=0.0.0',
+        '--build-arg', "DOTNET_VersionSuffix=$VersionLabel",
+        '--build-arg', 'DOTNET_AssemblyVersion=0.0.0.0',
+        '--build-arg', 'DOTNET_FileVersion=0.0.0.0',
+        '--build-arg', "DOTNET_InformationalVersion=0.0.0-$VersionLabel+$CommitSha",
+        $context
+    )
+    & docker @arguments 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Docker build failed for '$($Release.component)'." }
+    $digest = $null
+    if ($Push) {
+        & docker push $tag 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Docker push failed for '$($Release.component)'." }
+        $digest = Get-PushedImageDigest -Image $image -Tag $VersionLabel
+    }
+    [pscustomobject]@{ component = $Release.component; image = $image; tag = $tag; versionLabel = $VersionLabel; digest = $digest; artifactType = 'container-image' }
+}
+
+Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,Get-ChangedComponents,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag,Assert-CandidateCommit,Get-ShortSha,Get-PushedImageDigest,New-ReleaseManifest,Assert-ReleaseIdentity,Get-BranchAdvanceStrategy,New-ManifestPromotionPlan,Invoke-DevelopmentComponentPackage,Invoke-DevelopmentContainerBuild
