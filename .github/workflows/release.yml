@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [dev]
+    paths-ignore: [".github/**"]
   workflow_dispatch:
     inputs:
       version_bump:

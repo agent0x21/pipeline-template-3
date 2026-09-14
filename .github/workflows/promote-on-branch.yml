@@ -3,6 +3,7 @@ name: Promote Branch Release
 on:
   push:
     branches: [qa, main]
+    paths-ignore: [".github/**"]
 
 permissions:
   contents: read
