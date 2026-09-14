@@ -25,6 +25,12 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 45
     steps:
+      # pnpm's nested node_modules layout can exceed Windows' default 260-character
+      # path limit. actions/checkout cleans the workspace with `git clean` before
+      # checking out, which otherwise warns/fails on those paths from a prior run.
+      - name: Enable long path support for this workspace
+        shell: pwsh
+        run: git config --global core.longPaths true
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
