@@ -91,9 +91,9 @@ stages:
             displayName: Create release tags
 ```
 
-For Azure DevOps, configure approvals and checks on the `release-beta`, `release-rc`, and `release-stable` environments. Use a separate deployment job for registry publication with only the permissions and service connection required by that registry. Do not place registry credentials in script arguments or pipeline command text.
+For Azure DevOps, mirror the GitHub environment set: `development`, `beta`, `qa`, `qa-approval`, `rc`, and `production`. Put the human approval check on `qa-approval` only, and make the approval reference the persisted release identity (release id, candidate SHA, artifact digest) rather than a branch name. Use a separate deployment job for registry publication with only the permissions and service connection required by that registry. Do not place registry credentials in script arguments or pipeline command text.
 
-Azure DevOps uses `Build.SourceBranchName`, `Build.SourceVersion`, and `Build.BuildId` for the normalized branch, commit, and run ID. If the provider does not expose a suitable run ID, use the provider’s immutable build number instead.
+Azure DevOps uses `Build.SourceBranchName`, `Build.SourceVersion`, and `Build.BuildId` for the normalized branch, commit, and run ID. If the provider does not expose a suitable run ID, use the provider’s immutable build number instead. Pass `Build.SourceVersion` to `Assert-CandidateCommit.ps1` at the start of the candidate stage, and to `New-ReleaseManifest.ps1` as `-CandidateSha`; every later stage then reads `release-manifest.json` instead of the repository.
 
 ## Jenkins
 

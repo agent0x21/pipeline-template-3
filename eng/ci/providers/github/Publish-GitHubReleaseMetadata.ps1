@@ -12,8 +12,13 @@ if ([string]::IsNullOrWhiteSpace($Repository)) { throw 'Repository is required. 
 if ([string]::IsNullOrWhiteSpace($Token)) { throw 'Token is required. Set GITHUB_TOKEN or pass -Token.' }
 
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
-$releases = @($plan.releases)
-if ($releases.Count -eq 0 -and $plan.PSObject.Properties.Name -contains 'promotions') { $releases = @($plan.promotions) }
+$planProperties = $plan.PSObject.Properties.Name
+# Release plans use 'releases'; promotion plans (beta -> rc, rc -> stable) use
+# 'promotions'. Check property existence before accessing either name: under
+# Set-StrictMode, reading a missing property throws instead of returning $null.
+if ($planProperties -contains 'releases') { $releases = @($plan.releases) }
+elseif ($planProperties -contains 'promotions') { $releases = @($plan.promotions) }
+else { throw "Unrecognized plan schema at '$PlanPath': expected a 'releases' or 'promotions' property." }
 if ($releases.Count -eq 0) {
     Write-Host 'The release plan is empty; no GitHub release metadata will be published.'
     return

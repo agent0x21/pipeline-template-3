@@ -2,11 +2,22 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[^/\s]+/[^/\s]+$')][string]$Repository,
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string[]]$Reviewer,
-    [string[]]$Branches = @('dev', 'qa', 'main'),
-    [string[]]$Environments = @('release-beta', 'release-rc', 'release-stable', 'beta', 'rc', 'stable'),
+    # Branches where humans work: normal pull-request review rules apply.
+    [string[]]$DevelopmentBranches = @('dev'),
+    # Branches the release pipeline owns. Humans never push to these; the pipeline
+    # advances them onto the QA-approved commit.
+    [string[]]$PromotionBranches = @('qa', 'main'),
+    # GitHub App slug allowed to advance the promotion branches. The default is the
+    # app behind GITHUB_TOKEN in Actions.
+    [string]$AutomationApp = 'github-actions',
+    [string[]]$Environments = @('development', 'beta', 'qa', 'qa-approval', 'rc', 'production'),
+    # Only these environments gate on a human. 'qa-approval' is the QA sign-off for a
+    # specific release identity; the rest are deployment boundaries.
+    [string[]]$ApprovalEnvironments = @('qa-approval'),
     [ValidateRange(1, 6)][int]$RequiredApprovingReviewCount = 1,
     [switch]$PreventSelfReview,
-    [switch]$AllowAdministratorsToBypass
+    [switch]$AllowAdministratorsToBypass,
+    [switch]$PreservePromotionCommits
 )
 
 Set-StrictMode -Version Latest
@@ -18,7 +29,7 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 
 function Invoke-GitHubApi {
     param(
-        [Parameter(Mandatory)][ValidateSet('GET', 'PUT')][string]$Method,
+        [Parameter(Mandatory)][ValidateSet('GET', 'PUT', 'PATCH')][string]$Method,
         [Parameter(Mandatory)][string]$Endpoint,
         [object]$Body
     )
@@ -51,10 +62,26 @@ if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not authenticated. Run gh auth l
 $reviewers = @($Reviewer | ForEach-Object { Get-ReviewerReference $_ })
 $reviewerPayload = @($reviewers | ForEach-Object { [pscustomobject]@{ type = $_.type; id = $_.id } })
 
-foreach ($branch in $Branches) {
+if ($PreservePromotionCommits) {
+    # Optional. The pipeline advances qa and main itself and never squashes or
+    # cherry-picks the approved commit, so this is no longer required for
+    # traceability. It remains useful on development branches: a squash or rebase
+    # merge into dev replaces commits that an in-flight candidate may reference.
+    $mergePolicy = [pscustomobject]@{
+        allow_merge_commit = $true
+        allow_squash_merge = $false
+        allow_rebase_merge = $false
+    }
+    if ($PSCmdlet.ShouldProcess("repository '$Repository'", 'allow only merge commits for pull requests')) {
+        Invoke-GitHubApi -Method PATCH -Endpoint "repos/$Repository" -Body $mergePolicy | Out-Null
+        Write-Host "Configured pull-request merge policy to preserve promotion commits."
+    }
+}
+
+foreach ($branch in $DevelopmentBranches) {
     $endpoint = "repos/$Repository/branches/$([Uri]::EscapeDataString($branch))/protection"
     $body = [pscustomobject]@{
-        required_status_checks = $null
+        required_status_checks = [pscustomobject]@{ strict = $true; contexts = @('validate') }
         enforce_admins = (-not $AllowAdministratorsToBypass)
         required_pull_request_reviews = [pscustomobject]@{
             dismiss_stale_reviews = $true
@@ -71,23 +98,50 @@ foreach ($branch in $Branches) {
         lock_branch = $false
         allow_fork_syncing = $false
     }
-    if ($PSCmdlet.ShouldProcess("branch '$branch'", 'apply GitHub branch protection')) {
+    if ($PSCmdlet.ShouldProcess("branch '$branch'", 'apply development branch protection')) {
         Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
-        Write-Host "Protected branch: $branch"
+        Write-Host "Protected development branch: $branch"
+    }
+}
+
+foreach ($branch in $PromotionBranches) {
+    # qa and main are advanced by the pipeline onto the QA-approved commit. Write
+    # access is restricted to the automation identity so a developer cannot move a
+    # release branch by hand, and force pushes and deletions stay disabled so an
+    # approved commit can never be rewritten out of history.
+    $endpoint = "repos/$Repository/branches/$([Uri]::EscapeDataString($branch))/protection"
+    $body = [pscustomobject]@{
+        required_status_checks = $null
+        enforce_admins = (-not $AllowAdministratorsToBypass)
+        required_pull_request_reviews = $null
+        restrictions = [pscustomobject]@{ users = @(); teams = @(); apps = @($AutomationApp) }
+        required_linear_history = $false
+        allow_force_pushes = $false
+        allow_deletions = $false
+        block_creations = $false
+        required_conversation_resolution = $false
+        lock_branch = $false
+        allow_fork_syncing = $false
+    }
+    if ($PSCmdlet.ShouldProcess("branch '$branch'", "restrict pushes to the '$AutomationApp' automation identity")) {
+        Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
+        Write-Host "Protected promotion branch: $branch (writable only by '$AutomationApp')"
     }
 }
 
 foreach ($environment in $Environments) {
     $endpoint = "repos/$Repository/environments/$([Uri]::EscapeDataString($environment))"
+    $requiresApproval = $ApprovalEnvironments -contains $environment
     $body = [pscustomobject]@{
         wait_timer = 0
         prevent_self_review = [bool]$PreventSelfReview
-        reviewers = $reviewerPayload
+        reviewers = $(if ($requiresApproval) { $reviewerPayload } else { @() })
         deployment_branch_policy = $null
     }
-    if ($PSCmdlet.ShouldProcess("environment '$environment'", 'create/update required reviewers')) {
+    $action = if ($requiresApproval) { 'create/update required reviewers' } else { 'create/update deployment environment' }
+    if ($PSCmdlet.ShouldProcess("environment '$environment'", $action)) {
         Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
-        Write-Host "Configured environment: $environment"
+        Write-Host "Configured environment: $environment$(if ($requiresApproval) { ' (required reviewers)' })"
     }
 }
 
