@@ -1,4 +1,11 @@
-# Release candidate lifecycle: select -> build once -> QA -> approve -> production.
+# Release candidate lifecycle:
+#   select -> build once -> RC approval -> QA -> QA approval -> production approval -> production.
+#
+# Three separate human gates, each a distinct decision on its own GitHub environment:
+#   * rc-approval         Release manager: the built candidate may go to QA.
+#   * qa-approval          QA: the QA-tested digest may ship.
+#   * production-approval  Development manager: the QA-approved release may be
+#                          promoted into main and production.
 #
 # Invariants enforced by this workflow:
 #   * The candidate SHA is captured from the trigger context and verified against
@@ -269,9 +276,25 @@ jobs:
             registry-publication.json
           retention-days: 90
 
+  approve-rc:
+    name: "RC approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
+    needs: [candidate, publish-candidate]
+    runs-on: self-hosted
+    timeout-minutes: 4320
+    # Required reviewers on this environment gate the candidate before QA receives it.
+    # This is a release-manager sign-off on the built artifact, separate from the
+    # qa-approval gate below, which is QA's sign-off after testing it.
+    environment: rc-approval
+    permissions:
+      contents: read
+    steps:
+      - name: Record the RC approval
+        shell: pwsh
+        run: Write-Host "Candidate ${{ needs.candidate.outputs.candidate_sha }} (${{ needs.candidate.outputs.approval_summary }}) approved to proceed to QA."
+
   advance-qa:
     name: Advance qa to the candidate commit
-    needs: [candidate, publish-candidate]
+    needs: [candidate, publish-candidate, approve-rc]
     runs-on: self-hosted
     timeout-minutes: 15
     permissions:
@@ -437,9 +460,25 @@ jobs:
             promoted-image-tags.json
           retention-days: 90
 
+  approve-production:
+    name: "Production approval: ${{ needs.candidate.outputs.approval_summary }} @ ${{ needs.candidate.outputs.candidate_sha }}"
+    needs: [candidate, approve-qa, promote-rc]
+    runs-on: self-hosted
+    timeout-minutes: 4320
+    # Required reviewers on this environment are the development-manager gate before
+    # the stable/production version is created. Separate from qa-approval, which is
+    # QA's sign-off on the tested build, not a decision to ship it.
+    environment: production-approval
+    permissions:
+      contents: read
+    steps:
+      - name: Record the production approval
+        shell: pwsh
+        run: Write-Host "Release ${{ needs.candidate.outputs.candidate_sha }} (${{ needs.candidate.outputs.approval_summary }}) approved by the development manager to proceed to production."
+
   promote-main:
     name: Promote the approved source commit into main
-    needs: [candidate, approve-qa, promote-rc]
+    needs: [candidate, approve-qa, promote-rc, approve-production]
     runs-on: self-hosted
     timeout-minutes: 30
     permissions:

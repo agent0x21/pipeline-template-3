@@ -144,31 +144,40 @@ Everything else is automatic. The workflow:
 4. Creates immutable beta tags and GitHub releases on that commit.
 5. Publishes to GHCR and resolves the **registry manifest digest**.
 6. Writes `release-manifest.json` — the release identity every later stage reads.
-7. Advances `qa` onto the candidate commit (fast-forward preferred).
-8. Deploys that exact digest to QA.
-9. **Waits for your approval.**
+7. **Waits for RC approval.**
+8. Advances `qa` onto the candidate commit (fast-forward preferred).
+9. Deploys that exact digest to QA.
+10. **Waits for QA approval.**
 
 If the branch has no configured release channel, or nothing changed, the run fails
 with that reason rather than passing green and doing nothing.
 
 ### …approve a release?
 
-The run pauses on the `qa-approval` environment. The job name shows what you are
-approving, for example:
+The run pauses three times, each on its own environment, each gating a different
+decision:
+
+| Gate | Environment | Who | Decision |
+| --- | --- | --- | --- |
+| RC approval | `rc-approval` | Release manager | The built candidate may go to QA |
+| QA approval | `qa-approval` | QA | The QA-tested digest may ship |
+| Production approval | `production-approval` | Development manager | The QA-approved release may be promoted into `main` and production |
+
+The job name shows what you are approving, for example:
 
 ```text
 QA approval: api api/v1.18.0-beta.1 @ 7f31ab4…
 ```
 
 Open the run, check the **Release identity** and **QA-approved release** summaries
-(release id, commit, version, digest per component), and approve. Your approval is
+(release id, commit, version, digest per component), and approve. QA's approval is
 recorded against `git_sha + artifact_digest + release_id` — not against "whatever
 is on the qa branch". If the digest QA actually ran does not match the released
 digest, the approval cannot even be written.
 
-After you approve, the rest is automatic:
+After RC approval, the candidate is deployed to QA. After QA approval, RC tags and
+the RC registry tag are applied to the approved digest. After production approval:
 
-- RC tags and the RC registry tag, applied to the approved digest.
 - `main` advanced onto the approved commit, plus stable release tags.
 - Production deploys **the same digest**, after proving it equals the approved one
   and that no build output exists in the job.
@@ -176,13 +185,15 @@ After you approve, the rest is automatic:
 End to end:
 
 ```text
-Candidate:   release 1.18.0-beta.1, git_sha 7f31ab4…   (HEAD verified == 7f31ab4)
-Build:       ghcr.io/acme/orders, digest sha256:a872…   (built once)
-qa:          fast-forwarded to 7f31ab4
-QA:          deployed sha256:a872…   approved: yes
-Main:        advanced to include 7f31ab4
-Production:  deployed sha256:a872…   rebuilt: false
-Release tag: api/v1.18.0 → 7f31ab4
+Candidate:            release 1.18.0-beta.1, git_sha 7f31ab4…  (HEAD verified == 7f31ab4)
+Build:                ghcr.io/acme/orders, digest sha256:a872…  (built once)
+RC approval:          approved
+qa:                   fast-forwarded to 7f31ab4
+QA:                   deployed sha256:a872…   approved: yes
+Production approval:  approved
+Main:                 advanced to include 7f31ab4
+Production:           deployed sha256:a872…   rebuilt: false
+Release tag:          api/v1.18.0 → 7f31ab4
 ```
 
 ### …redeploy something that already shipped?
@@ -204,12 +215,14 @@ candidate *from* `qa` or `main` is also rejected.
 | --- | --- | --- | --- |
 | [CI](.github/workflows/ci.yml) | Push to any non-release branch, any PR | Nothing deployable | — |
 | [Development Artifact](.github/workflows/dev-build.yml) | Manual dispatch, or the `build:dev-artifact` PR label | `dev-<shortSha>` artifact + image | — |
-| [Release Candidate](.github/workflows/release.yml) | Manual dispatch from a development branch | The immutable release, through QA to production | `qa-approval` |
+| [Release Candidate](.github/workflows/release.yml) | Manual dispatch from a development branch | The immutable release, through QA to production | `rc-approval`, `qa-approval`, `production-approval` |
 | [Redeploy Approved Release](.github/workflows/promote.yml) | Manual dispatch | Redeploys an approved digest | Target environment |
 
-GitHub environments: `development`, `beta`, `qa`, `qa-approval`, `rc`,
-`production`. Only `qa-approval` gates on a human by default — it is the single
-release decision point.
+GitHub environments: `development`, `beta`, `qa`, `rc`, `production`, plus the
+three approval gates `rc-approval`, `qa-approval`, `production-approval`. Only
+those three gate on a human by default — each is a separate release decision
+(ship to QA, ship from QA, ship to production), held by whoever is accountable
+for that decision.
 
 ## Configuration
 

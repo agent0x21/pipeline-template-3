@@ -10,10 +10,13 @@ param(
     # GitHub App slug allowed to advance the promotion branches. The default is the
     # app behind GITHUB_TOKEN in Actions.
     [string]$AutomationApp = 'github-actions',
-    [string[]]$Environments = @('development', 'beta', 'qa', 'qa-approval', 'rc', 'production'),
-    # Only these environments gate on a human. 'qa-approval' is the QA sign-off for a
-    # specific release identity; the rest are deployment boundaries.
-    [string[]]$ApprovalEnvironments = @('qa-approval'),
+    [string[]]$Environments = @('development', 'beta', 'qa', 'rc', 'production', 'rc-approval', 'qa-approval', 'production-approval'),
+    # Only these environments gate on a human, each a separate release decision:
+    # 'rc-approval' (release manager, before QA receives the candidate), 'qa-approval'
+    # (QA sign-off for a specific release identity), and 'production-approval'
+    # (development manager, before main/production are advanced). The rest are
+    # deployment boundaries, not decision points.
+    [string[]]$ApprovalEnvironments = @('rc-approval', 'qa-approval', 'production-approval'),
     [ValidateRange(1, 6)][int]$RequiredApprovingReviewCount = 1,
     [switch]$PreventSelfReview,
     [switch]$AllowAdministratorsToBypass,
