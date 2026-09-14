@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [dev, qa, main]
+    branches: [dev]
   workflow_dispatch:
     inputs:
       version_bump:
@@ -37,6 +37,7 @@ concurrency:
 jobs:
   release:
     runs-on: self-hosted
+    timeout-minutes: 60
     outputs:
       channel: ${{ steps.release-channel.outputs.channel }}
       has_releases: ${{ steps.release-channel.outputs.has_releases }}
@@ -121,6 +122,7 @@ jobs:
     needs: release
     if: needs.release.outputs.has_releases == 'true'
     runs-on: self-hosted
+    timeout-minutes: 30
     environment: release-${{ needs.release.outputs.channel }}
     permissions:
       actions: read
@@ -154,6 +156,7 @@ jobs:
     needs: [release, create-tags]
     if: needs.release.outputs.has_releases == 'true' && needs.create-tags.result == 'success'
     runs-on: self-hosted
+    timeout-minutes: 30
     environment: ${{ github.ref_name == 'main' && 'stable' || github.ref_name == 'qa' && 'rc' || 'beta' }}
     permissions:
       actions: read
@@ -170,10 +173,10 @@ jobs:
           name: "release-${{ github.run_id }}"
           path: release-artifacts
       - name: Authenticate to GitHub Container Registry
-        shell: pwsh
-        env:
-          GHCR_TOKEN: "${{ github.token }}"
-        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
       - name: Publish registry artifacts
         shell: pwsh
         run: |

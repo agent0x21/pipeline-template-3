@@ -113,6 +113,27 @@ Describe 'Git release fixtures' {
         } finally { Pop-Location }
     }
 
+    It 'finds the immutable beta source for an unambiguous branch promotion' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $outputPath = Join-Path $fixture.Repository 'promotion-sources.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-beta.1',$fixture.Head) | Out-Null
+            Set-Content -LiteralPath (Join-Path $fixture.Repository 'release-notes.md') -Value 'promote the beta release'
+            Invoke-FixtureGit $fixture.Repository @('add','release-notes.md') | Out-Null
+            Invoke-FixtureGit $fixture.Repository @('commit','-m','Promote candidate') | Out-Null
+
+            Push-Location $fixture.Repository
+            & "$PSScriptRoot/../Find-BranchPromotionSources.ps1" -ConfigPath $configPath -TargetChannel rc -BaseRef $fixture.InitialCommit -OutputPath $outputPath | Out-Null
+            $sources = Get-Content $outputPath -Raw | ConvertFrom-Json
+
+            $sources.sourceChannel | Should -Be 'beta'
+            $sources.sources.Count | Should -Be 1
+            $sources.sources[0].tag | Should -Be 'app/v1.3.0-beta.1'
+        } finally { Pop-Location }
+    }
+
     It 'ignores legacy tags and reuses the existing tag when planning a rerun' {
         $legacy = New-ReleaseFixtureRepository -Root $TestDrive -Scenario legacy
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun
@@ -201,6 +222,45 @@ Describe 'Artifact promotion planning' {
         $config = @{ components = @{ app = @{ tagPrefix = 'app'; path = 'apps/app' } } }
 
         { New-ArtifactPromotionPlan -Config $config -ProvenancePath $provenancePath -TargetChannel stable } | Should -Throw '*beta -> rc -> stable*'
+    }
+}
+
+Describe 'GitHub release asset publication' {
+    It 'resolves every component artifact from a downloaded release bundle' {
+        $bundlePath = Join-Path $TestDrive 'downloaded-release'
+        $artifactPath = Join-Path $bundlePath 'artifacts'
+        $webPath = Join-Path $artifactPath 'web/web-v1.0.0-beta.1.zip'
+        $desktopPath = Join-Path $artifactPath 'desktop/desktop-v1.0.0-beta.1.zip'
+        New-Item -ItemType Directory -Force -Path (Split-Path $webPath), (Split-Path $desktopPath) | Out-Null
+        Set-Content -LiteralPath $webPath -Value 'web artifact'
+        Set-Content -LiteralPath $desktopPath -Value 'desktop artifact'
+        $provenancePath = Join-Path $artifactPath 'provenance.json'
+        $planPath = Join-Path $bundlePath 'release-plan.json'
+        $webHash = (Get-FileHash $webPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $desktopHash = (Get-FileHash $desktopPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $releasePlan = [pscustomobject]@{ releases = @(
+            [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0-beta.1'; channel = 'beta'; tag = 'web/v1.0.0-beta.1'; commit = 'abc123' },
+            [pscustomobject]@{ component = 'desktop'; semanticVersion = '1.0.0-beta.1'; channel = 'beta'; tag = 'desktop/v1.0.0-beta.1'; commit = 'abc123' }
+        ) }
+        [pscustomobject]@{
+            plan = $releasePlan
+            artifacts = @(
+                [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0-beta.1'; path = 'D:\original\artifacts\web\web-v1.0.0-beta.1.zip'; sha256 = $webHash; artifactType = 'zip' },
+                [pscustomobject]@{ component = 'desktop'; semanticVersion = '1.0.0-beta.1'; path = 'D:\original\artifacts\desktop\desktop-v1.0.0-beta.1.zip'; sha256 = $desktopHash; artifactType = 'zip' }
+            )
+        } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+        $releasePlan | ConvertTo-Json -Depth 12 | Set-Content $planPath
+
+        Mock Invoke-RestMethod { [pscustomobject]@{ id = 1; tag_name = 'test'; assets = @() } }
+        $oldRepository = $env:GITHUB_REPOSITORY; $oldToken = $env:GITHUB_TOKEN
+        try {
+            $env:GITHUB_REPOSITORY = 'example/repository'; $env:GITHUB_TOKEN = 'test-token'
+            & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseAssets.ps1" -PlanPath $planPath -ProvenancePath $provenancePath
+        } finally {
+            $env:GITHUB_REPOSITORY = $oldRepository; $env:GITHUB_TOKEN = $oldToken
+        }
+
+        Should -Invoke Invoke-RestMethod -Times 6 -Exactly
     }
 }
 
