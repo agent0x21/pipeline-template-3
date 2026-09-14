@@ -308,6 +308,51 @@ Describe 'GitHub release asset publication' {
 
         Should -Invoke Invoke-RestMethod -Times 6 -Exactly
     }
+
+    It 'resolves artifacts from a promotion plan that uses the promotions schema' {
+        $bundlePath = Join-Path $TestDrive 'promoted-release'
+        $artifactPath = Join-Path $bundlePath 'artifacts'
+        $appPath = Join-Path $artifactPath 'app/app-v2.1.0-beta.4.zip'
+        New-Item -ItemType Directory -Force -Path (Split-Path $appPath) | Out-Null
+        Set-Content -LiteralPath $appPath -Value 'app artifact'
+        $provenancePath = Join-Path $artifactPath 'provenance.json'
+        $planPath = Join-Path $bundlePath 'promotion-plan.json'
+        $appHash = (Get-FileHash $appPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [pscustomobject]@{
+            plan = [pscustomobject]@{ releases = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.4'; channel = 'beta'; tag = 'app/v2.1.0-beta.4'; commit = 'abc123' }) }
+            artifacts = @([pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-beta.4'; path = 'D:\original\artifacts\app\app-v2.1.0-beta.4.zip'; sha256 = $appHash; artifactType = 'zip' })
+        } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+        # Promotion plans (New-ArtifactPromotionPlan.ps1) expose 'promotions', not
+        # 'releases'. This is the schema that Publish-GitHubReleaseAssets.ps1 and
+        # Publish-GitHubReleaseMetadata.ps1 must also handle for a promotion run.
+        [pscustomobject]@{ targetChannel = 'rc'; promotions = @(
+            [pscustomobject]@{ component = 'app'; semanticVersion = '2.1.0-rc.1'; channel = 'rc'; tag = 'app/v2.1.0-rc.1'; commit = 'abc123'; sourceSemanticVersion = '2.1.0-beta.4' }
+        ) } | ConvertTo-Json -Depth 12 | Set-Content $planPath
+
+        Mock Invoke-RestMethod { [pscustomobject]@{ id = 1; tag_name = 'test'; assets = @() } }
+        $oldRepository = $env:GITHUB_REPOSITORY; $oldToken = $env:GITHUB_TOKEN
+        try {
+            $env:GITHUB_REPOSITORY = 'example/repository'; $env:GITHUB_TOKEN = 'test-token'
+            & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseAssets.ps1" -PlanPath $planPath -ProvenancePath $provenancePath
+            & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseMetadata.ps1" -PlanPath $planPath
+        } finally {
+            $env:GITHUB_REPOSITORY = $oldRepository; $env:GITHUB_TOKEN = $oldToken
+        }
+
+        Should -Invoke Invoke-RestMethod -Times 4 -Exactly
+    }
+
+    It 'rejects a plan file with neither a releases nor a promotions property' {
+        $planPath = Join-Path $TestDrive 'malformed-plan.json'
+        [pscustomobject]@{ targetChannel = 'rc' } | ConvertTo-Json -Depth 4 | Set-Content $planPath
+        $oldRepository = $env:GITHUB_REPOSITORY; $oldToken = $env:GITHUB_TOKEN
+        try {
+            $env:GITHUB_REPOSITORY = 'example/repository'; $env:GITHUB_TOKEN = 'test-token'
+            { & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseMetadata.ps1" -PlanPath $planPath } | Should -Throw '*Unrecognized plan schema*'
+        } finally {
+            $env:GITHUB_REPOSITORY = $oldRepository; $env:GITHUB_TOKEN = $oldToken
+        }
+    }
 }
 
 Describe 'Release packaging flow' {

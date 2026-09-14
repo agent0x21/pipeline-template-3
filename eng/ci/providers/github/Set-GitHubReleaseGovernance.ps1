@@ -6,7 +6,8 @@ param(
     [string[]]$Environments = @('release-beta', 'release-rc', 'release-stable', 'beta', 'rc', 'stable'),
     [ValidateRange(1, 6)][int]$RequiredApprovingReviewCount = 1,
     [switch]$PreventSelfReview,
-    [switch]$AllowAdministratorsToBypass
+    [switch]$AllowAdministratorsToBypass,
+    [switch]$PreservePromotionCommits
 )
 
 Set-StrictMode -Version Latest
@@ -18,7 +19,7 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 
 function Invoke-GitHubApi {
     param(
-        [Parameter(Mandatory)][ValidateSet('GET', 'PUT')][string]$Method,
+        [Parameter(Mandatory)][ValidateSet('GET', 'PUT', 'PATCH')][string]$Method,
         [Parameter(Mandatory)][string]$Endpoint,
         [object]$Body
     )
@@ -50,6 +51,21 @@ if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not authenticated. Run gh auth l
 
 $reviewers = @($Reviewer | ForEach-Object { Get-ReviewerReference $_ })
 $reviewerPayload = @($reviewers | ForEach-Object { [pscustomobject]@{ type = $_.type; id = $_.id } })
+
+if ($PreservePromotionCommits) {
+    # Merge commits retain the tagged beta/RC commit in branch history. Squash and
+    # rebase merges create replacement commits, which cannot prove that main
+    # contains the source commit from which the immutable artifact was built.
+    $mergePolicy = [pscustomobject]@{
+        allow_merge_commit = $true
+        allow_squash_merge = $false
+        allow_rebase_merge = $false
+    }
+    if ($PSCmdlet.ShouldProcess("repository '$Repository'", 'allow only merge commits for pull requests')) {
+        Invoke-GitHubApi -Method PATCH -Endpoint "repos/$Repository" -Body $mergePolicy | Out-Null
+        Write-Host "Configured pull-request merge policy to preserve promotion commits."
+    }
+}
 
 foreach ($branch in $Branches) {
     $endpoint = "repos/$Repository/branches/$([Uri]::EscapeDataString($branch))/protection"

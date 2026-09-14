@@ -47,6 +47,24 @@ pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1 `
 
 The script protects `dev`, `qa`, and `main` with pull-request reviews, stale-review dismissal, last-push approval, conversation resolution, and no force pushes/deletions. It creates or updates `release-beta`, `release-rc`, `release-stable`, `beta`, `rc`, and `stable` with the selected users/teams as required reviewers. Preview the API changes first with `-WhatIf`. On GitHub Free, required environment reviewers require a public repository; private repositories need a compatible paid plan.
 
+### Preserve the approved source commit through QA and production
+
+For the branch-driven promotion path, merge the approved `dev` change into `qa` and the approved `qa` change into `main` with a regular **merge commit**. Do not squash or rebase either promotion PR: those strategies create replacement commits, so `main` no longer contains the commit identified by the beta/RC tag and immutable artifact provenance.
+
+`Find-BranchPromotionSources.ps1` enforces this relationship before it creates an RC or stable promotion: the tagged source commit must be an ancestor of the destination branch tip, and the promoted component must be unchanged after that commit. This means a stable tag identifies the same source commit that QA approved, while `main` contains that commit in its history (a fast-forward is also valid when GitHub can perform one).
+
+To configure GitHub so PR authors cannot choose squash or rebase merges, run the governance command with `-PreservePromotionCommits` (use `-WhatIf` first):
+
+```powershell
+pwsh ./eng/ci/providers/github/Set-GitHubReleaseGovernance.ps1 `
+  -Repository 'OWNER/REPOSITORY' `
+  -Reviewer @('reviewer-user', 'my-org/release-managers') `
+  -PreventSelfReview `
+  -PreservePromotionCommits
+```
+
+This repository-level setting permits merge commits and disables squash and rebase merging. The manual **Promote Release** workflow remains a recovery path; use the branch-triggered workflow for normal QA-to-production promotion when commit-to-`main` traceability is required.
+
 Promotion consumes an existing release artifact's `provenance.json`, validates its component/version/digest entries, and creates tags for the same commit without invoking a build. Only `beta -> rc` and `rc -> stable` are allowed. A push to `qa` or `main` now performs this automatically: it finds the one beta/RC tag introduced by that promotion, verifies that the component content still matches, then downloads the immutable GitHub Release assets and provenance. Multiple candidates, a missing source release, or changed component content stop safely for an explicit release-manager decision. The **Promote Release** workflow remains available for an explicit source-run promotion and recovery scenario.
 
 Registry publication is opt-in per component through `publishing.adapter`: `nuget`, `npm`, or `container`. Generate a publication plan with `pnpm registry-plan -ProvenancePath ...`; for promotion, also pass `-PromotionPlanPath promotion-plan.json`. The plan carries the immutable source artifact digest while using the target RC/stable version, without copying credentials. `pnpm registry-publish` invokes `dotnet nuget push`, `npm publish --provenance`, or `docker push`. Authenticate those tools in the provider workflow using a short-lived/OIDC credential or a preconfigured credential helper; never put tokens in command-line arguments. The workflows publish only after their `beta`, `rc`, or `stable` environment approval and grant `id-token: write` only to the publication job.

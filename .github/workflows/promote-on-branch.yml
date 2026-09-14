@@ -58,12 +58,13 @@ jobs:
           @(
             '## Branch promotion approval summary'
             ''
-            "Source branch: ``$($env:GITHUB_REF_NAME)``"
+            "Destination branch: ``$($env:GITHUB_REF_NAME)``"
+            "Destination commit: ``$env:GITHUB_SHA``"
             "Target channel: ``$($sources.targetChannel)``"
             ''
-            '| Component | Version | Tag |'
-            '| --- | --- | --- |'
-            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+            '| Component | Approved source tag | Source commit | Target tag |'
+            '| --- | --- | --- | --- |'
+            @($plan.promotions | ForEach-Object { "| $($_.component) | ``$($_.sourceTag)`` | ``$($_.commit)`` | ``$($_.tag)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload immutable promotion inputs
         if: steps.plan.outputs.has_promotions == 'true'

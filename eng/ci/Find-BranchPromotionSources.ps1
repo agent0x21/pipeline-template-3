@@ -56,6 +56,14 @@ $sources = foreach ($componentName in $changed) {
     # highest sequence number is the intended candidate, and the diff check below still
     # rejects it if branch content moved on past that tag.
     $candidate = @($candidates) | Sort-Object sequence -Descending | Select-Object -First 1
+    # A release tag must name an actual ancestor of the promoted branch tip.  This is
+    # normally implied by the pushed range above, but retain the explicit assertion as
+    # the traceability boundary: squash and rebase merges recreate commits and must
+    # never be treated as a promotion of the artifact built from the original commit.
+    & git '-c' "safe.directory=$((Get-Location).Path)" merge-base --is-ancestor $candidate.commit $commitSha
+    if ($LASTEXITCODE -ne 0) {
+        throw "The source commit for $($candidate.tag) is not contained by the promoted branch tip. Merge the approved source without squashing or rebasing it."
+    }
     & git '-c' "safe.directory=$((Get-Location).Path)" diff --quiet $candidate.commit $commitSha -- ([string]$component.path)
     if ($LASTEXITCODE -ne 0) {
         throw "The promoted branch changes '$componentName' after $($candidate.tag). Build a new $sourceChannel artifact from the promoted source before continuing."

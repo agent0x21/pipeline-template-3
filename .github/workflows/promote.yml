@@ -25,6 +25,10 @@ jobs:
   promote:
     runs-on: self-hosted
     timeout-minutes: 30
+    # Manual promotion is reserved for recovery. Keep the same release-manager
+    # approval boundary as the branch-driven promotion workflow before it can
+    # create tags or GitHub releases.
+    environment: release-${{ inputs.target_channel }}
     permissions:
       actions: read
       contents: write
@@ -58,7 +62,7 @@ jobs:
             ''
             '| Component | Version | Tag |'
             '| --- | --- | --- |'
-            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+            @($plan.promotions | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
           ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Create promotion tags
         shell: pwsh
