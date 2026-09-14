@@ -43,6 +43,7 @@ jobs:
       channel: ${{ steps.release-channel.outputs.channel }}
       has_releases: ${{ steps.release-channel.outputs.has_releases }}
       approval_summary: ${{ steps.release-channel.outputs.approval_summary }}
+      run_id: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,6 +100,7 @@ jobs:
           @(
             '## Release approval summary'
             ''
+            "Run ID: ``$env:GITHUB_RUN_ID``"
             "Channel: ``$($plan.channel)``"
             "Commit: ``$($plan.commit)``"
             ''
