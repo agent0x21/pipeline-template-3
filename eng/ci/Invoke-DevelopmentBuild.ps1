@@ -35,17 +35,27 @@ $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 
 $results = foreach ($name in $requested) {
-    $component = $config.components[$name]
+    # Deliberately not named $component: PowerShell variable names are
+    # case-insensitive, so a variable here spelled like the -Component parameter
+    # above (a [string[]]) would reuse that same, differently-typed variable slot.
+    # Assigning this component's hashtable into it would then be silently coerced
+    # to a string array instead of failing at the point of assignment, and every
+    # property/key access below would fail confusingly far from the real cause.
+    $componentConfig = $config.components[$name]
+    if ($componentConfig -isnot [System.Collections.IDictionary] -or -not $componentConfig.ContainsKey('path')) {
+        $actualType = if ($null -eq $componentConfig) { '<null>' } else { $componentConfig.GetType().FullName }
+        throw "Component '$name' in '$ConfigPath' does not have a valid definition (expected a mapping with at least a 'path' property; got $actualType). Check the 'components.$name' entry in the configuration file."
+    }
     $build = [pscustomobject]@{
         component = $name
-        path = [string]$component.path
-        artifactPath = if ($component.ContainsKey('package') -and $component.package.ContainsKey('path')) { [string]$component.package.path } else { [string]$component.path }
-        componentType = if ($component.ContainsKey('type')) { [string]$component.type } else { '' }
-        buildCommand = if ($component.ContainsKey('build') -and $component.build.ContainsKey('command')) { [string]$component.build.command } else { '' }
-        buildSolution = if ($component.ContainsKey('build') -and $component.build.ContainsKey('solution')) { [string]$component.build.solution } else { '' }
-        buildMsbuildPath = if ($component.ContainsKey('build') -and $component.build.ContainsKey('msbuildPath')) { [string]$component.build.msbuildPath } else { '' }
-        buildConfiguration = if ($component.ContainsKey('build') -and $component.build.ContainsKey('configuration')) { [string]$component.build.configuration } else { 'Release' }
-        testCommand = if ($component.ContainsKey('test') -and $component.test.ContainsKey('command')) { [string]$component.test.command } else { '' }
+        path = [string]$componentConfig.path
+        artifactPath = if ($componentConfig.ContainsKey('package') -and $componentConfig.package.ContainsKey('path')) { [string]$componentConfig.package.path } else { [string]$componentConfig.path }
+        componentType = if ($componentConfig.ContainsKey('type')) { [string]$componentConfig.type } else { '' }
+        buildCommand = if ($componentConfig.ContainsKey('build') -and $componentConfig.build.ContainsKey('command')) { [string]$componentConfig.build.command } else { '' }
+        buildSolution = if ($componentConfig.ContainsKey('build') -and $componentConfig.build.ContainsKey('solution')) { [string]$componentConfig.build.solution } else { '' }
+        buildMsbuildPath = if ($componentConfig.ContainsKey('build') -and $componentConfig.build.ContainsKey('msbuildPath')) { [string]$componentConfig.build.msbuildPath } else { '' }
+        buildConfiguration = if ($componentConfig.ContainsKey('build') -and $componentConfig.build.ContainsKey('configuration')) { [string]$componentConfig.build.configuration } else { 'Release' }
+        testCommand = if ($componentConfig.ContainsKey('test') -and $componentConfig.test.ContainsKey('command')) { [string]$componentConfig.test.command } else { '' }
     }
     Invoke-ComponentBuild -Release $build
     if ($build.testCommand) {
@@ -53,7 +63,7 @@ $results = foreach ($name in $requested) {
         if ($LASTEXITCODE -ne 0) { throw "Tests failed for $name." }
     }
     $archive = Invoke-DevelopmentComponentPackage -Release $build -VersionLabel $versionLabel -OutputDirectory $outputRoot
-    $container = Invoke-DevelopmentContainerBuild -Release $build -Component $component -VersionLabel $versionLabel -CommitSha $candidateSha -Push:$Push
+    $container = Invoke-DevelopmentContainerBuild -Release $build -Component $componentConfig -VersionLabel $versionLabel -CommitSha $candidateSha -Push:$Push
     [pscustomobject]@{
         component = $name
         versionLabel = $versionLabel

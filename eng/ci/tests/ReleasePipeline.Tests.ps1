@@ -745,3 +745,59 @@ Describe 'QA approval records' {
     }
 }
 
+
+Describe 'Development build component resolution' {
+    It 'resolves the requested component definition without corrupting it through the -Component parameter' {
+        # Regression test for a case-insensitive variable collision: the script's
+        # -Component parameter is [string[]], and a same-named local variable used to
+        # be assigned the component's hashtable inside the selection loop. Because
+        # PowerShell variable names are case-insensitive, that reassignment silently
+        # coerced the hashtable into a string array instead of failing at the point
+        # of assignment, and every property/key access on it then failed far from the
+        # real cause ("The property 'path' cannot be found on this object.").
+        # Passing -Component with at least one entry is what triggers the collision.
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $config = $fixture.Config
+        # A trivial, dependency-free build command keeps this test independent of any
+        # real toolchain while still exercising the exact component-resolution path
+        # that failed (Invoke-ComponentBuild only runs once $build is built correctly).
+        $config.components.app.build = @{ command = "Write-Host 'build ok'" }
+        $config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        $outputDir = Join-Path $fixture.Repository 'dev-artifacts'
+        $outputPath = Join-Path $fixture.Repository 'development-build.json'
+        try {
+            Push-Location $fixture.Repository
+            & "$PSScriptRoot/../Invoke-DevelopmentBuild.ps1" -ConfigPath $configPath -ExpectedSha $fixture.Head -Branch 'dev/feature' -Component @('app') -OutputDirectory $outputDir -OutputPath $outputPath | Out-Null
+            $record = Get-Content $outputPath -Raw | ConvertFrom-Json
+            $record.isReleaseCandidate | Should -BeFalse
+            $record.gitSha | Should -Be $fixture.Head.ToLowerInvariant()
+            $record.components.Count | Should -Be 1
+            $record.components[0].component | Should -Be 'app'
+            $record.components[0].archivePath | Should -Not -BeNullOrEmpty
+            (Test-Path -LiteralPath $record.components[0].archivePath) | Should -BeTrue
+        } finally { Pop-Location }
+    }
+
+    It 'still fails past component resolution for a component with no configured build adapter, proving resolution (not the build step) was the original failure' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            Push-Location $fixture.Repository
+            { & "$PSScriptRoot/../Invoke-DevelopmentBuild.ps1" -ConfigPath $configPath -ExpectedSha $fixture.Head -Branch 'dev/feature' -Component @('app') } |
+                Should -Throw '*No build adapter is configured*'
+        } finally { Pop-Location }
+    }
+
+    It 'rejects an unknown requested component by name instead of a property error' {
+        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
+        $configPath = Join-Path $fixture.Repository 'release-config.json'
+        $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        try {
+            Push-Location $fixture.Repository
+            { & "$PSScriptRoot/../Invoke-DevelopmentBuild.ps1" -ConfigPath $configPath -ExpectedSha $fixture.Head -Branch 'dev/feature' -Component @('does-not-exist') } |
+                Should -Throw "*Unknown component 'does-not-exist'*"
+        } finally { Pop-Location }
+    }
+}
