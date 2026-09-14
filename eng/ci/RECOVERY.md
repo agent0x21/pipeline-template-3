@@ -93,6 +93,21 @@ Promotion must use the retained source artifact, including `artifacts/provenance
 
 Do not rebuild from source to replace a missing promoted artifact. A new build is a new release candidate and requires a new release plan, version, review, and approval.
 
+## Deployment failure after QA approval
+
+The release identity is already fixed at this point, so recovery never rebuilds. Rerun the **Redeploy Approved Release** workflow with the Release Candidate run ID and the target environment. It downloads `release-manifest.json` and `approved-release-manifest.json` from that run, asserts they still match, resolves each `image@sha256:...`, and redeploys. If the two manifests do not match, or the registry no longer serves the approved digest, stop: the artifact QA approved cannot be proven and a new candidate is required.
+
+## Branch promotion failure
+
+| Failure | Recovery |
+| --- | --- |
+| `cannot fast-forward` on `main` | `main` advanced independently. Rerun `Update-PromotionBranch.ps1` with `-AllowMerge` to record a merge commit preserving the approved SHA in ancestry, or create a new candidate from the current `main`. Never cherry-pick or squash the approved commit. |
+| `The 'qa'/'main' ref changed during promotion` | Another promotion moved the branch. Re-read the head and rerun; the release artifact is unaffected. |
+| Push rejected as non-fast-forward | Same cause. Rerun the promotion job; do not force-push. |
+| Merge conflict | The approved commit cannot be merged cleanly. Resolve the divergence on a development branch and create a new candidate; do not resolve conflicts inside the promotion job. |
+
+Re-running a promotion is safe: `up-to-date` and `already-contains` are no-ops, and `New-ReleaseTag` treats an existing tag on the same commit as `already-exists`.
+
 ## Recovery record
 
 For every incident, retain:

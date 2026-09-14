@@ -15,6 +15,16 @@ branches:
   dev:
     channel: beta
 
+# Deployment targets. These never build the application: they receive the
+# immutable artifact digest recorded in release-manifest.json and supply their own
+# configuration, secrets, and endpoints at deployment time. aliasTag is a mutable
+# convenience pointer only; the digest stays authoritative.
+environments:
+  qa:
+    aliasTag: qa
+  production:
+    aliasTag: production
+
 components:
   web:
     path: apps/web

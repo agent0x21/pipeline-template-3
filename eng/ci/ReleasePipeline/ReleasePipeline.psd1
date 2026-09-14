@@ -8,6 +8,10 @@
     FunctionsToExport = @(
         'Import-ReleaseConfig', 'Get-ReleaseChannel', 'Get-ComponentVersion',
         'Get-ChangedComponents', 'New-ReleasePlan', 'New-ArtifactPromotionPlan', 'Invoke-ComponentPackage', 'Invoke-ComponentContainerPackage', 'Invoke-ComponentBuild',
-        'New-ReleaseTag'
+        'New-ReleaseTag',
+        'Assert-CandidateCommit', 'Get-ShortSha', 'Get-PushedImageDigest',
+        'New-ReleaseManifest', 'Assert-ReleaseIdentity', 'Get-BranchAdvanceStrategy',
+        'New-ManifestPromotionPlan',
+        'Invoke-DevelopmentComponentPackage', 'Invoke-DevelopmentContainerBuild'
     )
 }

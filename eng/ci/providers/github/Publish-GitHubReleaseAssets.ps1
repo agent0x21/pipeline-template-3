@@ -48,8 +48,13 @@ function Publish-GitHubReleaseAsset {
 
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
 $provenance = Get-Content -LiteralPath $ProvenancePath -Raw | ConvertFrom-Json
-$releases = @($plan.releases)
-if ($releases.Count -eq 0 -and $plan.PSObject.Properties.Name -contains 'promotions') { $releases = @($plan.promotions) }
+$planProperties = $plan.PSObject.Properties.Name
+# Release plans use 'releases'; promotion plans (beta -> rc, rc -> stable) use
+# 'promotions'. Check property existence before accessing either name: under
+# Set-StrictMode, reading a missing property throws instead of returning $null.
+if ($planProperties -contains 'releases') { $releases = @($plan.releases) }
+elseif ($planProperties -contains 'promotions') { $releases = @($plan.promotions) }
+else { throw "Unrecognized plan schema at '$PlanPath': expected a 'releases' or 'promotions' property." }
 if ($releases.Count -eq 0) { Write-Host 'The release plan is empty; no GitHub release assets will be uploaded.'; return }
 
 $headers = @{ Accept = 'application/vnd.github+json'; Authorization = "Bearer $Token"; 'X-GitHub-Api-Version' = '2022-11-28' }

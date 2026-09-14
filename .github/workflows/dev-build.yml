@@ -1,0 +1,116 @@
+# Development artifact, built on demand for branch-level testing.
+#
+# This is NOT a release candidate. It creates no Git tag, writes no release plan,
+# and cannot enter the QA -> production promotion path. Developers commit freely;
+# they request an artifact only when they want to deploy a branch to development.
+#
+# The commit SHA is captured from the trigger context. Nobody types a SHA.
+name: Development Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      components:
+        description: 'Components to build, comma separated. Leave empty for all.'
+        required: false
+        type: string
+        default: ""
+      push_image:
+        description: Push the development container image to the registry
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+# One development build per branch. Other branches build concurrently and are
+# never blocked by this one; a newer request on the same branch supersedes it.
+concurrency:
+  group: "dev-build-${{ github.event.pull_request.head.ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  development-artifact:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'build:dev-artifact'
+    runs-on: self-hosted
+    timeout-minutes: 60
+    environment: development
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Captured automatically from the selected branch/PR head.
+      CANDIDATE_SHA: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+      SOURCE_BRANCH: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}"
+    steps:
+      - name: Reject release branches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_BRANCH -in @('qa','main')) {
+            throw "Development artifacts are for development branches. '$($env:SOURCE_BRANCH)' is a protected release branch; use the Release Candidate workflow instead."
+          }
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Validate runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($tool in @('git','pwsh','dotnet','node','docker')) {
+            if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required tool not found: $tool" }
+          }
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.3.4
+      - name: Install release engine dependencies
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Authenticate to GitHub Container Registry
+        if: inputs.push_image != false
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
+      - name: Build development artifact
+        shell: pwsh
+        env:
+          COMPONENTS: "${{ inputs.components }}"
+          PUSH_IMAGE: "${{ inputs.push_image != false }}"
+        run: |
+          $components = @()
+          if (-not [string]::IsNullOrWhiteSpace($env:COMPONENTS)) {
+            $components = @($env:COMPONENTS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          }
+          .\eng\ci\Invoke-DevelopmentBuild.ps1 -ExpectedSha $env:CANDIDATE_SHA -Branch $env:SOURCE_BRANCH -Component $components -Push:($env:PUSH_IMAGE -eq 'True')
+      - name: Summarize development artifact
+        shell: pwsh
+        run: |
+          $record = Get-Content .\development-build.json -Raw | ConvertFrom-Json
+          @(
+            '## Development artifact'
+            ''
+            'This is a development artifact. It is not a release candidate.'
+            ''
+            "Branch: ``$($record.sourceBranch)``"
+            "Git SHA: ``$($record.gitSha)``"
+            ''
+            '| Component | Artifact | Checksum | Image | Digest |'
+            '| --- | --- | --- | --- | --- |'
+            @($record.components | ForEach-Object { "| $($_.component) | ``$($_.versionLabel)`` | ``$($_.archiveSha256)`` | ``$($_.imageReference)`` | ``$($_.imageDigest)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload development artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: "development-${{ github.run_id }}"
+          path: |
+            dev-artifacts/
+            development-build.json
+          retention-days: 7
