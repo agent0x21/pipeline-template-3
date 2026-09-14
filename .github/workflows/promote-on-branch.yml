@@ -14,6 +14,7 @@ concurrency:
 jobs:
   plan-promotion:
     runs-on: self-hosted
+    timeout-minutes: 30
     outputs:
       has_promotions: ${{ steps.plan.outputs.has_promotions }}
       target_channel: ${{ steps.plan.outputs.target_channel }}
@@ -52,6 +53,17 @@ jobs:
           }
           $combined | ConvertTo-Json -Depth 16 | Set-Content source-artifacts\provenance.json -Encoding utf8
           .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath source-artifacts\provenance.json -TargetChannel $env:TARGET_CHANNEL
+          $plan = Get-Content .\promotion-plan.json -Raw | ConvertFrom-Json
+          @(
+            '## Branch promotion approval summary'
+            ''
+            "Source branch: ``$($env:GITHUB_REF_NAME)``"
+            "Target channel: ``$($sources.targetChannel)``"
+            ''
+            '| Component | Version | Tag |'
+            '| --- | --- | --- |'
+            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Upload immutable promotion inputs
         if: steps.plan.outputs.has_promotions == 'true'
         uses: actions/upload-artifact@v7
@@ -68,6 +80,7 @@ jobs:
     needs: plan-promotion
     if: needs.plan-promotion.outputs.has_promotions == 'true'
     runs-on: self-hosted
+    timeout-minutes: 30
     environment: release-${{ needs.plan-promotion.outputs.target_channel }}
     permissions:
       actions: read
@@ -103,6 +116,7 @@ jobs:
     needs: [plan-promotion, create-tags]
     if: needs.plan-promotion.outputs.has_promotions == 'true' && needs.create-tags.result == 'success'
     runs-on: self-hosted
+    timeout-minutes: 30
     environment: ${{ needs.plan-promotion.outputs.target_channel }}
     permissions:
       actions: read
@@ -118,10 +132,10 @@ jobs:
           name: "branch-promotion-result-${{ github.run_id }}"
           path: promotion-artifacts
       - name: Authenticate to GitHub Container Registry
-        shell: pwsh
-        env:
-          GHCR_TOKEN: "${{ github.token }}"
-        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
       - name: Publish registry artifacts
         shell: pwsh
         run: |

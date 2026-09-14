@@ -1,0 +1,17 @@
+name: GHCR login
+description: Authenticate Docker to GitHub Container Registry using the run's GITHUB_TOKEN
+inputs:
+  actor:
+    description: GitHub actor to authenticate as
+    required: true
+  token:
+    description: Token used as the Docker login password
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Authenticate to GitHub Container Registry
+      shell: pwsh
+      env:
+        GHCR_TOKEN: "${{ inputs.token }}"
+      run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ inputs.actor }}' --password-stdin

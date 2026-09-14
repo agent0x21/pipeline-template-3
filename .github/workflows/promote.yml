@@ -24,6 +24,7 @@ concurrency:
 jobs:
   promote:
     runs-on: self-hosted
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: write
@@ -45,6 +46,20 @@ jobs:
       - name: Plan promotion
         shell: pwsh
         run: .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath .\source-artifacts\artifacts\provenance.json -TargetChannel '${{ inputs.target_channel }}'
+      - name: Summarize promotion plan
+        shell: pwsh
+        run: |
+          $plan = Get-Content .\promotion-plan.json -Raw | ConvertFrom-Json
+          @(
+            '## Promotion summary'
+            ''
+            "Source run: ``${{ inputs.source_run_id }}``"
+            "Target channel: ``${{ inputs.target_channel }}``"
+            ''
+            '| Component | Version | Tag |'
+            '| --- | --- | --- |'
+            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Create promotion tags
         shell: pwsh
         run: .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-plan.json -Push
@@ -63,7 +78,7 @@ jobs:
           GITHUB_TOKEN: "${{ github.token }}"
         run: .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\promotion-plan.json
       - name: Upload deployable GitHub release assets
-        shell: pw
+        shell: pwsh
         env:
           GITHUB_TOKEN: "${{ github.token }}"
         run: .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\promotion-plan.json -ProvenancePath .\source-artifacts\artifacts\provenance.json
@@ -71,6 +86,7 @@ jobs:
   publish:
     needs: promote
     runs-on: self-hosted
+    timeout-minutes: 30
     environment: ${{ inputs.target_channel }}
     permissions:
       actions: read
@@ -87,10 +103,10 @@ jobs:
           name: "promotion-${{ inputs.source_run_id }}-${{ inputs.target_channel }}-${{ github.run_id }}"
           path: promotion-artifacts
       - name: Authenticate to GitHub Container Registry
-        shell: pwsh
-        env:
-          GHCR_TOKEN: "${{ github.token }}"
-        run: $env:GHCR_TOKEN | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
       - name: Publish registry artifacts
         shell: pwsh
         run: |
