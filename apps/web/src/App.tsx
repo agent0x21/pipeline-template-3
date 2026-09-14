@@ -87,7 +87,9 @@ function App() {
               ))}
             </div>
           ) : (
-            <p className="empty">The dashboard is still available offline.</p>
+            <p className="empty">
+              The dashboard is still available when you are offline.
+            </p>
           )}
         </section>
       </section>

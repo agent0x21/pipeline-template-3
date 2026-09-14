@@ -507,4 +507,4 @@ function New-ReleaseTag {
     [pscustomobject]@{ tag = $Release.tag; status = 'created' }
 }
 
-Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag
+Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,Get-ChangedComponents,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag

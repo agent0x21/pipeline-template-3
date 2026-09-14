@@ -1,0 +1,144 @@
+name: Promote Branch Release
+
+on:
+  push:
+    branches: [qa, main]
+    paths-ignore: [".github/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "promotion-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  plan-promotion:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    outputs:
+      has_promotions: ${{ steps.plan.outputs.has_promotions }}
+      target_channel: ${{ steps.plan.outputs.target_channel }}
+      approval_summary: ${{ steps.plan.outputs.approval_summary }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Install YAML parser
+        shell: pwsh
+        run: Install-Module powershell-yaml -Scope CurrentUser -Force
+      - name: Find immutable promotion sources
+        id: plan
+        shell: pwsh
+        env:
+          PUSH_BASE_REF: "${{ github.event.before }}"
+          TARGET_CHANNEL: "${{ github.ref_name == 'qa' && 'rc' || 'stable' }}"
+        run: |
+          .\eng\ci\Find-BranchPromotionSources.ps1 -BaseRef $env:PUSH_BASE_REF -TargetChannel $env:TARGET_CHANNEL
+          $sources = Get-Content .\promotion-sources.json -Raw | ConvertFrom-Json
+          $hasPromotions = if (@($sources.sources).Count -gt 0) { 'true' } else { 'false' }
+          "has_promotions=$hasPromotions" >> $env:GITHUB_OUTPUT
+          "target_channel=$($sources.targetChannel)" >> $env:GITHUB_OUTPUT
+          "approval_summary=$(@($sources.sources | ForEach-Object { "$($_.component) $($_.tag)" }) -join ', ')" >> $env:GITHUB_OUTPUT
+          if ($hasPromotions -eq 'false') { return }
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI is required to download immutable release assets.' }
+          New-Item -ItemType Directory -Path source-artifacts -Force | Out-Null
+          foreach ($tag in @($sources.sources.tag)) { gh release download $tag --repo $env:GITHUB_REPOSITORY --dir source-artifacts }
+          $provenanceFiles = @(Get-ChildItem source-artifacts -Filter '*.provenance.json' -File)
+          if ($provenanceFiles.Count -ne @($sources.sources).Count) { throw 'Each promotion source must provide exactly one GitHub release provenance asset.' }
+          $sourceProvenance = foreach ($file in $provenanceFiles) { Get-Content $file.FullName -Raw | ConvertFrom-Json }
+          $combined = [pscustomobject]@{
+            plan = [pscustomobject]@{ releases = @($sourceProvenance | ForEach-Object { $_.plan.releases }) }
+            artifacts = @($sourceProvenance | ForEach-Object { $_.artifacts })
+          }
+          $combined | ConvertTo-Json -Depth 16 | Set-Content source-artifacts\provenance.json -Encoding utf8
+          .\eng\ci\New-ArtifactPromotionPlan.ps1 -ProvenancePath source-artifacts\provenance.json -TargetChannel $env:TARGET_CHANNEL
+          $plan = Get-Content .\promotion-plan.json -Raw | ConvertFrom-Json
+          @(
+            '## Branch promotion approval summary'
+            ''
+            "Source branch: ``$($env:GITHUB_REF_NAME)``"
+            "Target channel: ``$($sources.targetChannel)``"
+            ''
+            '| Component | Version | Tag |'
+            '| --- | --- | --- |'
+            @($plan.releases | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | ``$($_.tag)`` |" })
+          ) | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Upload immutable promotion inputs
+        if: steps.plan.outputs.has_promotions == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: "branch-promotion-${{ github.run_id }}"
+          path: |
+            source-artifacts/
+            promotion-plan.json
+            promotion-sources.json
+          retention-days: 30
+
+  create-tags:
+    name: "Approve promotion tags and GitHub releases: ${{ needs.plan-promotion.outputs.approval_summary }}"
+    needs: plan-promotion
+    if: needs.plan-promotion.outputs.has_promotions == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: release-${{ needs.plan-promotion.outputs.target_channel }}
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@v7
+        with:
+          name: "branch-promotion-${{ github.run_id }}"
+          path: promotion-artifacts
+      - name: Create promotion tags
+        shell: pwsh
+        run: .\eng\ci\Invoke-ArtifactPromotion.ps1 -PlanPath .\promotion-artifacts\promotion-plan.json -Push
+      - name: Publish GitHub release metadata and assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: "${{ github.token }}"
+        run: |
+          .\eng\ci\providers\github\Publish-GitHubReleaseMetadata.ps1 -PlanPath .\promotion-artifacts\promotion-plan.json
+          .\eng\ci\providers\github\Publish-GitHubReleaseAssets.ps1 -PlanPath .\promotion-artifacts\promotion-plan.json -ProvenancePath .\promotion-artifacts\source-artifacts\provenance.json
+      - name: Upload promotion record
+        uses: actions/upload-artifact@v7
+        with:
+          name: "branch-promotion-result-${{ github.run_id }}"
+          path: promotion-artifacts/
+          retention-days: 30
+
+  publish:
+    name: "Approve promoted registry publication: ${{ needs.plan-promotion.outputs.approval_summary }}"
+    needs: [plan-promotion, create-tags]
+    if: needs.plan-promotion.outputs.has_promotions == 'true' && needs.create-tags.result == 'success'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    environment: ${{ needs.plan-promotion.outputs.target_channel }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - uses: actions/download-artifact@v7
+        with:
+          name: "branch-promotion-result-${{ github.run_id }}"
+          path: promotion-artifacts
+      - name: Authenticate to GitHub Container Registry
+        uses: ./.github/actions/ghcr-login
+        with:
+          actor: "${{ github.actor }}"
+          token: "${{ github.token }}"
+      - name: Publish registry artifacts
+        shell: pwsh
+        run: |
+          .\eng\ci\New-RegistryPublicationPlan.ps1 -ProvenancePath .\promotion-artifacts\source-artifacts\provenance.json -PromotionPlanPath .\promotion-artifacts\promotion-plan.json -OutputPath .\registry-publication-plan.json
+          .\eng\ci\Publish-RegistryArtifacts.ps1 -PlanPath .\registry-publication-plan.json -OutputPath .\registry-publication.json
