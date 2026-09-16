@@ -86,7 +86,8 @@ if ($Operation -eq 'PromotePROD') {
     }
     & "$ciRoot/Publish-PromotedImageTag.ps1" -ManifestPath $manifestPath -PromotionPlanPath $planPath -OutputPath "$OutputDirectory/promoted-image-tags.json"
     foreach ($entry in $plan.promotions) {
-        $stable = Get-StoredRelease $entry.tag
+        $stable = Get-StoredRelease $entry.tag -AllowMissing
+        if (-not $stable) { throw "Stable release '$($entry.tag)' for '$($entry.component)' was reserved above but cannot be found now. Rerun PromotePROD; it is safe to retry." }
         Invoke-ReleaseApi -Path "releases/$($stable.id)" -Method PATCH -Body @{ draft = $false; prerelease = $false; make_latest = 'false' } | Out-Null
     }
     $recordName = "production-approval-$($env:GITHUB_RUN_ID).json"

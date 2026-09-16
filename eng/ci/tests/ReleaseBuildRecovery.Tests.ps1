@@ -20,6 +20,9 @@ Describe 'RC publication recovery integration' {
         $global:ReleaseHttpFixture.assetStore = @{}
         $global:ReleaseHttpFixture.nextAssetId = 0
         $global:ReleaseHttpFixture.failOnce = $true
+        $global:ReleaseHttpFixture.tagLookups = @()
+        $global:ReleaseHttpFixture.tagCallCounts = @{}
+        $global:ReleaseHttpFixture.vanishTagAtCall = @{}
         $global:ReleaseHttpFixture.storeRoot = Join-Path $TestDrive 'http-assets'
         New-Item -ItemType Directory $global:ReleaseHttpFixture.storeRoot | Out-Null
         Mock Invoke-RestMethod {
@@ -45,6 +48,13 @@ Describe 'RC publication recovery integration' {
             }
             if ($path -like 'releases/tags/*') {
                 $tag = [uri]::UnescapeDataString($path.Substring('releases/tags/'.Length))
+                $global:ReleaseHttpFixture.tagLookups += $tag
+                if (-not $global:ReleaseHttpFixture.tagCallCounts.ContainsKey($tag)) { $global:ReleaseHttpFixture.tagCallCounts[$tag] = 0 }
+                $global:ReleaseHttpFixture.tagCallCounts[$tag]++
+                if ($global:ReleaseHttpFixture.vanishTagAtCall.ContainsKey($tag) -and $global:ReleaseHttpFixture.tagCallCounts[$tag] -eq $global:ReleaseHttpFixture.vanishTagAtCall[$tag]) {
+                    $global:ReleaseHttpFixture.vanishTagAtCall.Remove($tag)
+                    throw [ReleaseFixtureNotFound]::new()
+                }
                 $match = @($global:ReleaseHttpFixture.store.Values | Where-Object tag_name -eq $tag)
                 if (-not $match.Count) { throw [ReleaseFixtureNotFound]::new() }
                 return $match[0]
@@ -109,7 +119,11 @@ Describe 'RC publication recovery integration' {
             $env:GITHUB_RUN_ID = '456'
             & "$PSScriptRoot/../providers/github/Invoke-ReleaseHandoff.ps1" @handoffArguments -Operation ApproveQA -ExpectedManifestSha256 $manifestHash
             $env:GITHUB_RUN_ID = '789'
-            & "$PSScriptRoot/../providers/github/Invoke-ReleaseHandoff.ps1" @handoffArguments -Operation PromotePROD -QaRunId '456'
+            # Simulate the stable release being unreadable (e.g. read-after-write lag) exactly when
+            # PromotePROD re-resolves it to flip draft -> published, after the image is already promoted.
+            $global:ReleaseHttpFixture.vanishTagAtCall = @{ 'app/v1.3.0' = 2 }
+            { & "$PSScriptRoot/../providers/github/Invoke-ReleaseHandoff.ps1" @handoffArguments -Operation PromotePROD -QaRunId '456' } |
+                Should -Throw "*Stable release 'app/v1.3.0'*reserved above*Rerun PromotePROD*"
             # Retry production too: the stable identity and original package bytes remain unchanged.
             & "$PSScriptRoot/../providers/github/Invoke-ReleaseHandoff.ps1" @handoffArguments -Operation PromotePROD -QaRunId '456'
             @(Get-Content build-count.txt).Count | Should -Be 1
@@ -119,6 +133,9 @@ Describe 'RC publication recovery integration' {
             $stableAsset = @($stableRelease.assets | Where-Object name -eq 'app-v1.3.0.zip')[0]
             $candidateAsset = @($global:ReleaseHttpFixture.store.Values | Where-Object tag_name -eq 'app/v1.3.0-rc.1')[0].assets | Where-Object name -eq 'app-v1.3.0-rc.1.zip'
             $stableAsset.digest | Should -Be $candidateAsset.digest
+            # PromotePROD must resolve the promoted component's GitHub Release by its real stable tag,
+            # not by the internal release/<run-id> release-set identifier used only to look up the RC manifest.
+            $global:ReleaseHttpFixture.tagCallCounts['app/v1.3.0'] | Should -BeGreaterOrEqual 2
         } finally {
             Pop-Location
             $env:GH_TOKEN = $previousToken

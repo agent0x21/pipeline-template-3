@@ -24,17 +24,17 @@ environments:
   PROD: {}
 
 components:
-  # web:
-  #   path: apps/web
-  #   watchPaths: [packages/shared]
-  #   type: node
-  #   tagPrefix: web
-  #   build:
-  #     command: pnpm --filter ./apps/web build
-  #   test:
-  #     command: pnpm --filter ./apps/web lint
-  #   package:
-  #     path: apps/web/dist
+  web:
+    path: apps/web
+    watchPaths: [packages/shared]
+    type: node
+    tagPrefix: web
+    build:
+      command: pnpm --filter ./apps/web build
+    test:
+      command: pnpm --filter ./apps/web lint
+    package:
+      path: apps/web/dist
   api:
     path: apps/api
     type: modern-dotnet
