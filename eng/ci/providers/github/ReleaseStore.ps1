@@ -4,7 +4,13 @@ function Invoke-ReleaseApi {
     $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
     $arguments = @{ Uri = "https://api.github.com/repos/$Repository/$Path"; Headers = $headers; Method = $Method }
     if ($null -ne $Body) { $arguments.Body = ($Body | ConvertTo-Json -Depth 30 -Compress); $arguments.ContentType = 'application/json' }
-    try { Invoke-RestMethod @arguments } catch {
+    try {
+        # Invoke-RestMethod writes an array response as a single, non-enumerated pipeline
+        # object. Without Write-Output, a caller piping into Where-Object/ForEach-Object
+        # receives the whole array as one $_ instead of one item per asset.
+        $response = Invoke-RestMethod @arguments
+        Write-Output $response
+    } catch {
         if ($AllowMissing -and $_.Exception.PSObject.Properties.Name -contains 'Response' -and $_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { return $null }
         throw
     }
