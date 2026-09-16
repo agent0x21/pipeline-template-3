@@ -27,7 +27,7 @@ function Assert-StoredTagCommit {
 
 function Get-StoredAsset {
     param([object]$Release, [string]$Name, [string]$Directory, [switch]$Optional)
-    $assets = @(Invoke-ReleaseApi "releases/$($Release.id)/assets?per_page=100" | Where-Object name -eq $Name)
+    $assets = @(Invoke-ReleaseApi "releases/$($Release.id)/assets?per_page=100" | Where-Object { $_ -and $_.name -eq $Name })
     if ($assets.Count -eq 0 -and $Optional) { return $null }
     if ($assets.Count -ne 1) { throw "Release '$($Release.tag_name)' requires exactly one asset '$Name'." }
     if ($Name -ne [IO.Path]::GetFileName($Name)) { throw 'Invalid asset filename.' }
@@ -44,7 +44,7 @@ function Get-StoredAsset {
 function Add-StoredAsset {
     param([object]$Release, [string]$Path, [string]$Name = '')
     if (-not $Name) { $Name = Split-Path -Leaf $Path }
-    $existing = @(Invoke-ReleaseApi "releases/$($Release.id)/assets?per_page=100" | Where-Object name -eq $Name)
+    $existing = @(Invoke-ReleaseApi "releases/$($Release.id)/assets?per_page=100" | Where-Object { $_ -and $_.name -eq $Name })
     if ($existing.Count -gt 0) {
         $compare = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
         $download = Get-StoredAsset $Release $Name $compare
@@ -63,7 +63,7 @@ function Save-ReleaseJson {
 function Get-EnvironmentReview {
     param([ValidateSet('QA','PROD')][string]$Environment, [string]$RunId = $env:GITHUB_RUN_ID)
     $reviews = @(Invoke-ReleaseApi "actions/runs/$RunId/approvals" | Where-Object {
-        $_.state -eq 'approved' -and @($_.environments | Where-Object name -eq $Environment).Count -gt 0
+        $_.state -eq 'approved' -and @($_.environments | Where-Object { $_ -and $_.name -eq $Environment }).Count -gt 0
     })
     if ($reviews.Count -eq 0) { throw "No GitHub reviewer evidence for $Environment. Configure required reviewers; bypass is not sign-off." }
     [pscustomobject]@{
