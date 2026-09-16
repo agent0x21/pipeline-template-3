@@ -7,7 +7,14 @@ runtime:
   operatingSystem: windows
   scripting: pwsh
 
-watchPaths: [pnpm-lock.yaml, pnpm-workspace.yaml, package.json, .releasepipeline.yml, eng/ci]
+watchPaths:
+  [
+    pnpm-lock.yaml,
+    pnpm-workspace.yaml,
+    package.json,
+    .releasepipeline.yml,
+    eng/ci,
+  ]
 
 # Standard GitHub approval/configuration boundaries. Installation stays manual.
 # Future deployment targets must consume the verified manifest without rebuilding.
@@ -17,17 +24,17 @@ environments:
   PROD: {}
 
 components:
-  web:
-    path: apps/web
-    watchPaths: [packages/shared]
-    type: node
-    tagPrefix: web
-    build:
-      command: pnpm --filter ./apps/web build
-    test:
-      command: pnpm --filter ./apps/web lint
-    package:
-      path: apps/web/dist
+  # web:
+  #   path: apps/web
+  #   watchPaths: [packages/shared]
+  #   type: node
+  #   tagPrefix: web
+  #   build:
+  #     command: pnpm --filter ./apps/web build
+  #   test:
+  #     command: pnpm --filter ./apps/web lint
+  #   package:
+  #     path: apps/web/dist
   api:
     path: apps/api
     type: modern-dotnet
