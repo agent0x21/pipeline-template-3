@@ -86,4 +86,4 @@ jobs:
           if-no-files-found: error
       - name: Summarize
         run: |
-          "## DEV artifacts prepared`n`nSource: ${{ steps.source.outputs.sha }}`n`nDownload this run's artifacts for manual installation. No deployment or release tags were created." >> $env:GITHUB_STEP_SUMMARY
+          "## DEV artifacts prepared`n`nSource: [``${{ steps.source.outputs.sha }}``](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.source.outputs.sha }})`n`nDownload this run's artifacts for manual installation. No deployment or release tags were created." >> $env:GITHUB_STEP_SUMMARY
