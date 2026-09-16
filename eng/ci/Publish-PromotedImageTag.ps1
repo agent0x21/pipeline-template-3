@@ -17,9 +17,9 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'ReleasePipeline/ReleasePipeline.psd1') -Force
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-if ([string]$manifest.schema -ne 'release-manifest/v1') { throw "'$ManifestPath' is not a release manifest." }
+if ([string]$manifest.schema -ne 'release-manifest/v2') { throw "'$ManifestPath' is not a v2 release manifest." }
 $promotions = @((Get-Content -LiteralPath $PromotionPlanPath -Raw | ConvertFrom-Json).promotions)
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker is required to publish a promoted image tag.' }
+if (@($manifest.components | Where-Object imageDigest).Count -gt 0 -and -not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker is required to publish a promoted image tag.' }
 
 $results = foreach ($promotion in $promotions) {
     $name = [string]$promotion.component
@@ -37,6 +37,12 @@ $results = foreach ($promotion in $promotions) {
 
     $promotedTag = [string]$promotion.semanticVersion
     $target = "${image}:$promotedTag"
+    $existing = & docker pull $target 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        if ((Get-PushedImageDigest -Image $image -Tag $promotedTag) -ne $digest) { throw "Immutable image tag '$target' already identifies another artifact." }
+    } elseif (($existing -join ' ') -notmatch 'manifest unknown|not found|manifest.*unknown') {
+        throw "Cannot check existing image tag '$target': $($existing -join ' ')"
+    }
     & docker tag $reference $target 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Unable to tag '$target'." }
     & docker push $target 2>&1 | Out-Host

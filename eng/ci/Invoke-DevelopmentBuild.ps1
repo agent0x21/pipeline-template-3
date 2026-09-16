@@ -14,7 +14,8 @@ param(
     [string[]]$Component = @(),
     [string]$OutputDirectory = 'dev-artifacts',
     [switch]$Push,
-    [string]$OutputPath = 'development-build.json'
+    [string]$OutputPath = 'development-build.json',
+    [string]$BuildId = $(if ($env:GITHUB_RUN_ID) { "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)" } else { [guid]::NewGuid().ToString('N') })
 )
 
 Set-StrictMode -Version Latest
@@ -24,7 +25,8 @@ Import-Module (Join-Path $PSScriptRoot 'ReleasePipeline/ReleasePipeline.psd1') -
 $config = Import-ReleaseConfig $ConfigPath
 $candidateSha = Assert-CandidateCommit -ExpectedSha $ExpectedSha
 $shortSha = Get-ShortSha $candidateSha
-$versionLabel = "dev-$shortSha"
+if ($BuildId -notmatch '^[A-Za-z0-9._-]+$') { throw 'BuildId must be safe for an artifact tag.' }
+$versionLabel = "dev-$shortSha-$BuildId"
 
 $requested = if ($Component.Count -gt 0) { @($Component) } else { @($config.components.Keys) }
 foreach ($name in $requested) {

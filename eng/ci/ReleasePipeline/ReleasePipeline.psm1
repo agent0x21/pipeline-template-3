@@ -39,14 +39,7 @@ function Test-ReleaseConfig {
     if (-not $Config.versioning) { throw 'Configuration must define versioning.' }
     if (-not $Config.versioning.defaultBump) { $Config.versioning.defaultBump = 'minor' }
     if ($Config.versioning.defaultBump -notin @('major','minor','patch')) { throw 'versioning.defaultBump must be major, minor, or patch.' }
-    if (-not $Config.branches -or @($Config.branches.Keys).Count -eq 0) { throw 'Configuration must define at least one branch channel.' }
-
-    foreach ($branch in $Config.branches.Keys) {
-        if ([string]::IsNullOrWhiteSpace([string]$branch)) { throw 'Branch names must not be empty.' }
-        $branchConfig = $Config.branches[$branch]
-        $channel = if ($branchConfig -is [System.Collections.IDictionary] -and $branchConfig.ContainsKey('channel')) { [string]$branchConfig.channel } else { '' }
-        if ($channel -notin @('stable','beta','rc')) { throw "Branch '$branch' must specify stable, beta, or rc as its channel." }
-    }
+    if ($Config.ContainsKey('branches')) { throw 'Branch channels are retired. Pass explicit release intent instead.' }
 
     if ($Config.ContainsKey('environments') -and $Config.environments) {
         if ($Config.environments -isnot [System.Collections.IDictionary]) { throw 'Configuration environments must be a mapping.' }
@@ -121,14 +114,6 @@ function Import-ReleaseConfig {
     $config = ConvertTo-Hashtable $config
     Test-ReleaseConfig -Config $config -ConfigDirectory (Split-Path -Parent (Resolve-Path -LiteralPath $Path))
     return $config
-}
-
-function Get-ReleaseChannel {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable] $Config, [Parameter(Mandatory)][string] $Branch)
-    $branchConfig = $Config.branches[$Branch]
-    if ($branchConfig -and $branchConfig.channel) { return [string]$branchConfig.channel }
-    return $null
 }
 
 function Get-Git([string[]] $Arguments) {
@@ -301,53 +286,6 @@ function New-ArtifactPromotionPlan {
     }
 }
 
-function New-ReleasePlan {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [ValidateSet('major','minor','patch')][string]$VersionBump,
-        [hashtable]$ComponentOverrides = @{}, [hashtable]$ExactVersions = @{},
-        [Parameter(Mandatory)][string]$Branch, [string]$BaseRef = 'HEAD~1', [string]$Commit = 'HEAD', [switch]$ReleaseAll,
-        [string]$CiRunId = '', [string]$Repository = ''
-    )
-    $channel = Get-ReleaseChannel $Config $Branch
-    if (-not $channel) { return [pscustomobject]@{ generatedAt = [DateTime]::UtcNow.ToString('o'); commit = (Get-Git @('rev-parse',$Commit) | Select-Object -First 1); branch = $Branch; releases = @() } }
-    $commitSha = Get-Git @('rev-parse',$Commit) | Select-Object -First 1
-    $changed = if ($ReleaseAll) { @($Config.components.Keys) } else { Get-ChangedComponents $Config $BaseRef $Commit }
-    $names = Get-AffectedComponents $Config $changed
-    $releases = foreach ($name in $names) {
-        $component = $Config.components[$name]; $current = Get-ComponentVersion $component
-        $versionFloor = $current
-        if ($channel -eq 'beta') {
-            $qaVersion = Get-ComponentChannelVersion -Component $component -Channel rc
-            if ($qaVersion -and (-not $versionFloor -or (Compare-CoreVersion $qaVersion $versionFloor) -gt 0)) { $versionFloor = $qaVersion }
-        }
-        $bump = Resolve-Bump $name $Config $VersionBump $ComponentOverrides
-        if ($bump.Type -notin @('major','minor','patch')) { throw "Invalid bump for '$name': $($bump.Type)" }
-        $existingRelease = Get-ReleaseForCommit -Component $component -Commit $commitSha -Channel $channel
-        $versionText = if ($existingRelease) { $existingRelease.Version.Text } elseif ($ExactVersions[$name]) { [string]$ExactVersions[$name] } else {
-            $base = if ($versionFloor) { $versionFloor } else { ConvertFrom-SemVer ([string]$(if ($component.ContainsKey('initialVersion')) { $component.initialVersion } else { '0.0.0' })) }
-            $major = $base.Major; $minor = $base.Minor; $patch = $base.Patch
-            if ($bump.Type -eq 'major') { $major++; $minor = 0; $patch = 0 } elseif ($bump.Type -eq 'minor') { $minor++; $patch = 0 } else { $patch++ }
-            ConvertTo-SemVer $major $minor $patch '' 0
-        }
-        $parsed = ConvertFrom-SemVer $versionText
-        if (-not $existingRelease -and $versionFloor -and (Compare-CoreVersion $parsed $versionFloor) -le 0 -and -not $ExactVersions[$name]) { throw "Calculated version for '$name' is not newer than its channel version floor." }
-        if (-not $existingRelease -and $ExactVersions[$name] -and $versionFloor -and (Compare-CoreVersion $parsed $versionFloor) -le 0) { throw "Exact version for '$name' must be greater than its channel version floor." }
-        $sequence = 0
-        if (-not $existingRelease -and $channel -ne 'stable' -and -not ($ExactVersions[$name] -and $parsed.Channel)) {
-            $tagPrefix = [string]$component.tagPrefix
-            $tagPattern = "$tagPrefix/v$versionText-$channel.*"
-            $sequence = @(Get-Git @('tag','--list',$tagPattern) | ForEach-Object { if ($_ -match "-$channel\.(?<n>\d+)$") { [int]$Matches.n } } | Measure-Object -Maximum).Maximum
-            if (-not $sequence) { $sequence = 0 }; $sequence++
-            $versionText = "$versionText-$channel.$sequence"
-        }
-        if ($ExactVersions[$name] -and $parsed.Channel -and $parsed.Channel -ne $channel) { throw "Exact version channel for '$name' does not match branch channel '$channel'." }
-        [pscustomobject]@{ component = $name; path = [string]$component.path; componentType = if ($component.ContainsKey('type')) { [string]$component.type } else { '' }; artifactPath = if ($component.ContainsKey('package') -and $component.package.ContainsKey('path')) { [string]$component.package.path } else { [string]$component.path }; semanticVersion = $versionText; tag = if ($existingRelease) { $existingRelease.Tag } else { "$($component.tagPrefix)/v$versionText" }; channel = $channel; bump = $bump.Type; bumpSource = if ($existingRelease) { 'rerun' } elseif ($ExactVersions[$name]) { 'exact-version' } else { $bump.Source }; currentVersion = if ($current) { $current.Text } else { $null }; commit = $commitSha; ciRunId = $CiRunId; repository = $Repository; buildCommand = if ($component.ContainsKey('build') -and $component.build.ContainsKey('command')) { [string]$component.build.command } else { '' }; buildSolution = if ($component.ContainsKey('build') -and $component.build.ContainsKey('solution')) { [string]$component.build.solution } else { '' }; buildMsbuildPath = if ($component.ContainsKey('build') -and $component.build.ContainsKey('msbuildPath')) { [string]$component.build.msbuildPath } else { '' }; buildConfiguration = if ($component.ContainsKey('build') -and $component.build.ContainsKey('configuration')) { [string]$component.build.configuration } else { 'Release' }; testCommand = if ($component.ContainsKey('test') -and $component.test.ContainsKey('command')) { [string]$component.test.command } else { '' } }
-    }
-    return [pscustomobject]@{ generatedAt = [DateTime]::UtcNow.ToString('o'); branch = $Branch; channel = $channel; commit = $commitSha; releases = @($releases) }
-}
-
 function Invoke-ComponentPackage {
     [CmdletBinding()] param([Parameter(Mandatory)][pscustomobject]$Release, [Parameter(Mandatory)][string]$OutputDirectory)
     $componentOutput = Join-Path $OutputDirectory $Release.component
@@ -494,10 +432,17 @@ function New-ReleaseTag {
     $existing = @(Get-Git @('tag','--list',$Release.tag))
     if ($existing) {
         $tagCommit = Get-Git @('rev-list','-n','1',$Release.tag) | Select-Object -First 1
-        if ($tagCommit -eq $Release.commit) { return [pscustomobject]@{ tag = $Release.tag; status = 'already-exists' } }
+        if ($tagCommit -eq $Release.commit) {
+            if ($Push) {
+                $remoteCommit = Get-RemoteTagCommit -Tag $Release.tag
+                if ($remoteCommit -and $remoteCommit -ne $Release.commit) { throw "Tag '$($Release.tag)' already exists on another commit remotely." }
+                Get-Git @('push','--atomic','origin',"refs/tags/$($Release.tag)") | Out-Null
+            }
+            return [pscustomobject]@{ tag = $Release.tag; status = 'already-exists' }
+        }
         throw "Tag '$($Release.tag)' already exists on another commit."
     }
-    & git tag -a $Release.tag $Release.commit -m "Release $($Release.component) $($Release.semanticVersion)"
+    & git '-c' "safe.directory=$((Get-Location).Path)" tag -a $Release.tag $Release.commit -m "Release $($Release.component) $($Release.semanticVersion)"
     if ($LASTEXITCODE -ne 0) { throw "Unable to create tag '$($Release.tag)'." }
     if ($Push) {
         $safeDirectory = (Get-Location).Path
@@ -674,95 +619,6 @@ function Assert-ReleaseIdentity {
     return $true
 }
 
-function New-ManifestPromotionPlan {
-    <#
-        Derives the RC/stable promotion from the persisted release identity instead
-        of from the current head of a mutable branch. Every promotion targets the
-        candidate SHA the artifact was built from, and the beta -> rc -> stable
-        ladder is enforced against tags on that commit.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][hashtable]$Config,
-        [Parameter(Mandatory)][object]$Manifest,
-        [Parameter(Mandatory)][ValidateSet('rc','stable')][string]$TargetChannel
-    )
-    $candidateSha = ([string]$Manifest.candidateSha).ToLowerInvariant()
-    if (-not (Test-CommitSha $candidateSha)) { throw "The release manifest does not carry a full candidate commit SHA." }
-    $components = @($Manifest.components)
-    if ($components.Count -eq 0) { throw 'The release manifest does not contain any components to promote.' }
-
-    $promotions = foreach ($entry in $components) {
-        $name = [string]$entry.component
-        if (-not $Config.components.ContainsKey($name)) { throw "The release manifest references unknown component '$name'." }
-        $component = $Config.components[$name]
-        $prefix = [string]$component.tagPrefix
-        $source = ConvertFrom-SemVer ([string]$entry.semanticVersion)
-        if ($source.Channel -ne 'beta') { throw "Component '$name' is at channel '$($source.Channel)'. A release manifest always records the candidate build, which must be a beta artifact." }
-        $core = ConvertTo-SemVer $source.Major $source.Minor $source.Patch '' 0
-
-        if ($TargetChannel -eq 'rc') {
-            $sequence = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | ForEach-Object {
-                if ($_ -match '-rc\.(?<n>\d+)$') { [int]$Matches.n }
-            } | Measure-Object -Maximum).Maximum
-            if (-not $sequence) { $sequence = 0 }
-            $existing = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | Where-Object {
-                (Get-Git @('rev-list','-n','1',$_) | Select-Object -First 1) -eq $candidateSha
-            })
-            # Re-running an approved release must not mint a second RC for the same commit.
-            $targetVersion = if ($existing.Count -ge 1) { ($existing | Sort-Object -Descending | Select-Object -First 1) -replace "^$([regex]::Escape($prefix))/v", '' } else { ConvertTo-SemVer $source.Major $source.Minor $source.Patch 'rc' ($sequence + 1) }
-        } else {
-            $rcForCommit = @(Get-Git @('tag','--list',"$prefix/v$core-rc.*") | Where-Object {
-                (Get-Git @('rev-list','-n','1',$_) | Select-Object -First 1) -eq $candidateSha
-            })
-            if ($rcForCommit.Count -eq 0) {
-                throw "Component '$name' has no RC tag on the approved commit '$candidateSha'. Promotion must follow beta -> rc -> stable."
-            }
-            $targetVersion = $core
-        }
-
-        [pscustomobject]@{
-            component = $name
-            commit = $candidateSha
-            channel = $TargetChannel
-            semanticVersion = $targetVersion
-            tag = "$prefix/v$targetVersion"
-            sourceChannel = 'beta'
-            sourceSemanticVersion = [string]$entry.semanticVersion
-            sourceTag = [string]$entry.tag
-            sourceImageDigest = [string]$entry.imageDigest
-            sourceArchiveSha256 = [string]$entry.archiveSha256
-        }
-    }
-    [pscustomobject]@{
-        generatedAt = [DateTime]::UtcNow.ToString('o')
-        releaseId = [string]$Manifest.releaseId
-        candidateSha = $candidateSha
-        targetChannel = $TargetChannel
-        promotions = @($promotions)
-    }
-}
-
-function Get-BranchAdvanceStrategy {
-    <#
-        Decides how a protected source branch may be advanced onto the candidate
-        commit without ever rewriting that commit. Pure decision logic; the caller
-        supplies the ancestry facts and performs the Git work.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][AllowEmptyString()][string]$CurrentSha,
-        [Parameter(Mandatory)][string]$CandidateSha,
-        [bool]$CurrentIsAncestorOfCandidate,
-        [bool]$CandidateIsAncestorOfCurrent
-    )
-    if ([string]::IsNullOrWhiteSpace($CurrentSha)) { return 'create' }
-    if ($CurrentSha.ToLowerInvariant() -eq $CandidateSha.ToLowerInvariant()) { return 'up-to-date' }
-    if ($CandidateIsAncestorOfCurrent) { return 'already-contains' }
-    if ($CurrentIsAncestorOfCandidate) { return 'fast-forward' }
-    return 'merge'
-}
-
 function Invoke-DevelopmentComponentPackage {
     <#
         Development artifacts are deliberately not release artifacts: they are keyed
@@ -829,4 +685,6 @@ function Invoke-DevelopmentContainerBuild {
     [pscustomobject]@{ component = $Release.component; image = $image; tag = $tag; versionLabel = $VersionLabel; digest = $digest; artifactType = 'container-image' }
 }
 
-Export-ModuleMember -Function Import-ReleaseConfig,Get-ReleaseChannel,Get-ComponentVersion,Get-ChangedComponents,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag,Assert-CandidateCommit,Get-ShortSha,Get-PushedImageDigest,New-ReleaseManifest,Assert-ReleaseIdentity,Get-BranchAdvanceStrategy,New-ManifestPromotionPlan,Invoke-DevelopmentComponentPackage,Invoke-DevelopmentContainerBuild
+. (Join-Path $PSScriptRoot 'ReleasePlanning.ps1')
+
+Export-ModuleMember -Function Import-ReleaseConfig,Get-ComponentVersion,Get-ChangedComponents,New-ReleasePlan,New-ArtifactPromotionPlan,Invoke-ComponentPackage,Invoke-ComponentContainerPackage,Invoke-ComponentBuild,New-ReleaseTag,Assert-CandidateCommit,Get-ShortSha,Get-PushedImageDigest,New-ReleaseManifest,Assert-ReleaseIdentity,Resolve-ReleaseSource,Get-ReleaseBaseline,New-ManifestPromotionPlan,Invoke-DevelopmentComponentPackage,Invoke-DevelopmentContainerBuild

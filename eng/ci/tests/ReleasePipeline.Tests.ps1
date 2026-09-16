@@ -6,19 +6,14 @@ Describe 'Release configuration and channels' {
     It 'loads the sample configuration with minor as the default' {
         $config = Import-ReleaseConfig "$PSScriptRoot/../../../.releasepipeline.yml"
         $config.versioning.defaultBump | Should -Be 'minor'
-        (Get-ReleaseChannel $config 'dev') | Should -Be 'beta'
-        (Get-ReleaseChannel $config 'main') | Should -Be 'stable'
+        $config.ContainsKey('branches') | Should -BeFalse
+        $config.environments.Keys | Should -Contain 'PROD'
     }
 }
 
 Describe 'Release planning' {
-    It 'rejects an unsupported branch without creating releases' {
-        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps'; tagPrefix = 'app'; initialVersion = '1.0.0' } }; branches = @{} }
-        (New-ReleasePlan -Config $config -Branch 'feature/test' -Commit 'HEAD').releases.Count | Should -Be 0
-    }
-
     It 'gives component overrides precedence over workflow overrides' {
-        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{}; branches = @{ dev = @{ channel = 'beta' } } }
+        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{}; }
         $bump = & (Get-Module ReleasePipeline) { param($cfg) Resolve-Bump 'app' $cfg 'patch' @{ app = 'major' } } $config
         $bump.Type | Should -Be 'major'; $bump.Source | Should -Be 'component'
     }
@@ -28,16 +23,16 @@ Describe 'Release planning' {
             common = @{ path = 'src/common'; tagPrefix = 'common' }
             api = @{ path = 'src/api'; tagPrefix = 'api'; dependencies = @('common') }
             web = @{ path = 'src/web'; tagPrefix = 'web' }
-        }; branches = @{ dev = @{ channel = 'beta' } } }
+        }; }
         $affected = & (Get-Module ReleasePipeline) { param($cfg) Get-AffectedComponents $cfg @('common') } $config
         @($affected | Sort-Object) | Should -Be @('api','common')
     }
 
     It 'uses the configured artifact path in a release plan' {
-        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'src/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } }; branches = @{ main = @{ channel = 'stable' } } }
+        $config = @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'src/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } }; }
         Mock -ModuleName ReleasePipeline Get-Git { if ($Arguments[0] -eq 'rev-parse') { 'abc123' } else { @() } }
         Mock -ModuleName ReleasePipeline Get-ChangedComponents { @('app') }
-        $plan = New-ReleasePlan -Config $config -Branch main -Commit HEAD
+        $plan = New-ReleasePlan -Config $config -Branch main -Commit HEAD -ReleaseAll
         $plan.releases[0].artifactPath | Should -Be 'out/app'
     }
 }
@@ -49,18 +44,18 @@ Describe 'Release configuration validation' {
     }
 
     It 'rejects a missing dependency' {
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('missing') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('missing') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*missing dependency*'
     }
 
     It 'rejects dependency cycles, duplicate prefixes, and paths outside the repository' {
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*duplicates tagPrefix*'
 
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = '../outside'; tagPrefix = 'app' } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = '../outside'; tagPrefix = 'app' } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*within the configuration directory*'
 
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'worker'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'worker'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*contains a cycle*'
     }
 }
@@ -72,8 +67,8 @@ Describe 'Git release fixtures' {
             Push-Location $fixture.Repository
             $plan = New-ReleasePlan -Config $fixture.Config -Branch dev
             $plan.releases.Count | Should -Be 1
-            $plan.releases[0].semanticVersion | Should -Be '0.1.0-beta.1'
-            $plan.releases[0].tag | Should -Be 'app/v0.1.0-beta.1'
+            $plan.releases[0].semanticVersion | Should -Be '0.1.0-rc.1'
+            $plan.releases[0].tag | Should -Be 'app/v0.1.0-rc.1'
         } finally { Pop-Location }
     }
 
@@ -82,17 +77,17 @@ Describe 'Git release fixtures' {
         $prerelease = New-ReleaseFixtureRepository -Root $TestDrive -Scenario prerelease
         try {
             Push-Location $stable.Repository
-            (New-ReleasePlan -Config $stable.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0'
+            (New-ReleasePlan -Config $stable.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.1'
             $exactPlan = New-ReleasePlan -Config $stable.Config -Branch main -BaseRef HEAD~1 -ExactVersions @{ app = '1.4.0' }
-            $exactPlan.releases[0].semanticVersion | Should -Be '1.4.0'
+            $exactPlan.releases[0].semanticVersion | Should -Be '1.4.0-rc.1'
             $exactPlan.releases[0].bumpSource | Should -Be 'exact-version'
         } finally { Pop-Location }
         try {
             Push-Location $prerelease.Repository
-            (New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.4.0-beta.1'
+            (New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.2'
             (New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.2'
-            { New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1 -ExactVersions @{ app = '1.3.0' } } | Should -Throw '*channel version floor*'
-            { New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1 -ExactVersions @{ app = '1.2.0' } } | Should -Throw '*channel version floor*'
+            { New-ReleasePlan -Config $prerelease.Config -Branch dev -BaseRef HEAD~1 -ExactVersions @{ app = '1.2.3' } } | Should -Throw '*reachable stable baseline*'
+            { New-ReleasePlan -Config $prerelease.Config -Branch qa -BaseRef HEAD~1 -ExactVersions @{ app = '1.2.0' } } | Should -Throw '*reachable stable baseline*'
         } finally { Pop-Location }
     }
 
@@ -118,12 +113,12 @@ Describe 'Git release fixtures' {
         $rerun = New-ReleaseFixtureRepository -Root $TestDrive -Scenario rerun
         try {
             Push-Location $legacy.Repository
-            (New-ReleasePlan -Config $legacy.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0'
+            (New-ReleasePlan -Config $legacy.Config -Branch main -BaseRef HEAD~1).releases[0].semanticVersion | Should -Be '1.3.0-rc.1'
         } finally { Pop-Location }
         try {
             Push-Location $rerun.Repository
             $plan = New-ReleasePlan -Config $rerun.Config -Branch dev -BaseRef HEAD~1
-            $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
+            $plan.releases[0].semanticVersion | Should -Be '1.3.0-rc.1'
             $plan.releases[0].bumpSource | Should -Be 'rerun'
         } finally { Pop-Location }
     }
@@ -146,7 +141,7 @@ Describe 'Git release fixtures' {
             Push-Location $fixture.Repository
             $plan = New-ReleasePlan -Config $fixture.Config -Branch dev -BaseRef HEAD -ReleaseAll
             $plan.releases.Count | Should -Be 1
-            $plan.releases[0].semanticVersion | Should -Be '1.3.0-beta.1'
+            $plan.releases[0].semanticVersion | Should -Be '1.3.0-rc.1'
         } finally { Pop-Location }
     }
 
@@ -351,7 +346,7 @@ exit 0
 '@
         @{
             versioning = @{ defaultBump = 'minor' }
-            branches = @{ main = @{ channel = 'stable' } }
+
             components = @{ api = @{
                 path = 'apps/api'; tagPrefix = 'api'
                 build = @{ command = 'Write-Output ready' }
@@ -396,7 +391,7 @@ Describe 'Registry publication planning' {
         $componentPath = Join-Path $TestDrive 'apps/app'
         New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
         $configPath = Join-Path $TestDrive 'release-config.json'
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
         $provenancePath = Join-Path $TestDrive 'provenance.json'
         @{ plan = @{ releases = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; channel = 'beta'; commit = 'abc123' }) }; artifacts = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; path = 'app.tgz'; sha256 = ('c' * 64) }) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
         $promotionPath = Join-Path $TestDrive 'promotion-plan.json'
@@ -413,7 +408,7 @@ Describe 'Registry publication planning' {
         $componentPath = Join-Path $TestDrive 'apps/api'
         New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
         $configPath = Join-Path $TestDrive 'container-release-config.json'
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
         $provenancePath = Join-Path $TestDrive 'container-provenance.json'
         @{ plan = @{ releases = @(@{ component = 'api'; semanticVersion = '1.2.0'; channel = 'stable'; commit = 'abc123' }) }; artifacts = @(
             @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.zip'; sha256 = ('a' * 64); artifactType = 'zip' },
@@ -435,7 +430,7 @@ Describe 'Registry publication recovery' {
         $planPath = Join-Path $TestDrive 'registry-publication-plan.json'
         $resultPath = Join-Path $TestDrive 'registry-publication-retry.json'
         @{ publications = @(
-            @{ component = 'api'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('d' * 64) },
+            @{ component = 'api'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = (Get-FileHash $artifactPath).Hash.ToLowerInvariant() },
             @{ component = 'web'; adapter = 'npm'; semanticVersion = '1.2.0'; artifactPath = $artifactPath; endpoint = 'https://registry.example.invalid'; oidc = $true; sha256 = ('e' * 64) }
         ) } | ConvertTo-Json -Depth 8 | Set-Content $planPath
 
@@ -454,7 +449,7 @@ Describe 'Registry publication planning' {
         $componentPath = Join-Path $TestDrive 'apps/app'
         New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
         $configPath = Join-Path $TestDrive 'release-config.json'
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; publishing = @{ adapter = 'npm'; endpoint = 'https://registry.example.invalid'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
         $provenancePath = Join-Path $TestDrive 'provenance.json'
         @{ plan = @{ releases = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; channel = 'beta'; commit = 'abc123' }) }; artifacts = @(@{ component = 'app'; semanticVersion = '2.1.0-beta.1'; path = 'app.tgz'; sha256 = ('c' * 64) }) } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
         $promotionPath = Join-Path $TestDrive 'promotion-plan.json'
@@ -471,7 +466,7 @@ Describe 'Registry publication planning' {
         $componentPath = Join-Path $TestDrive 'apps/api'
         New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
         $configPath = Join-Path $TestDrive 'container-release-config.json'
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ api = @{ path = 'apps/api'; tagPrefix = 'api'; publishing = @{ adapter = 'container'; image = 'example.invalid/api'; oidc = $true } } } } | ConvertTo-Json -Depth 12 | Set-Content $configPath
         $provenancePath = Join-Path $TestDrive 'container-provenance.json'
         @{ plan = @{ releases = @(@{ component = 'api'; semanticVersion = '1.2.0'; channel = 'stable'; commit = 'abc123' }) }; artifacts = @(
             @{ component = 'api'; semanticVersion = '1.2.0'; path = 'api.zip'; sha256 = ('a' * 64); artifactType = 'zip' },
@@ -566,108 +561,6 @@ Describe 'Release identity' {
     }
 }
 
-Describe 'Protected branch advancement' {
-    It 'prefers a fast-forward and never rewrites the candidate commit' {
-        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) -CurrentIsAncestorOfCandidate $true | Should -Be 'fast-forward'
-    }
-
-    It 'treats an identical or already-containing branch as needing no update' {
-        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('a' * 40) | Should -Be 'up-to-date'
-        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) -CandidateIsAncestorOfCurrent $true | Should -Be 'already-contains'
-    }
-
-    It 'requires a merge when the branch advanced independently' {
-        Get-BranchAdvanceStrategy -CurrentSha ('a' * 40) -CandidateSha ('b' * 40) | Should -Be 'merge'
-        Get-BranchAdvanceStrategy -CurrentSha '' -CandidateSha ('b' * 40) | Should -Be 'create'
-    }
-
-    It 'fast-forwards qa onto the candidate commit without changing its SHA' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
-        & git init --bare $remote | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($fixture.InitialCommit):refs/heads/qa") | Out-Null
-        try {
-            Push-Location $fixture.Repository
-            & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch qa -CandidateSha $fixture.Head -Push -OutputPath (Join-Path $fixture.Repository 'promotion-qa.json') | Out-Null
-            $record = Get-Content (Join-Path $fixture.Repository 'promotion-qa.json') -Raw | ConvertFrom-Json
-            $record.strategy | Should -Be 'fast-forward'
-            $record.resultSha | Should -Be $fixture.Head.ToLowerInvariant()
-            $record.mergeCommit | Should -BeNullOrEmpty
-            (@(Invoke-FixtureGit $fixture.Repository @('ls-remote','origin','refs/heads/qa')) -join "`n") | Should -BeLike "$($fixture.Head)*"
-        } finally { Pop-Location }
-    }
-
-    It 'preserves the approved commit in ancestry when main has advanced' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
-        & git init --bare $remote | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
-        # main moves on independently with an unrelated change.
-        Invoke-FixtureGit $fixture.Repository @('checkout','-b','main-work',$fixture.InitialCommit) | Out-Null
-        Set-Content -LiteralPath (Join-Path $fixture.Repository 'hotfix.txt') -Value 'independent hotfix'
-        Invoke-FixtureGit $fixture.Repository @('add','hotfix.txt') | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('commit','-m','Independent hotfix on main') | Out-Null
-        $mainHead = Invoke-FixtureGit $fixture.Repository @('rev-parse','HEAD') | Select-Object -First 1
-        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($mainHead):refs/heads/main") | Out-Null
-        try {
-            Push-Location $fixture.Repository
-            { & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch main -CandidateSha $fixture.Head -Push -OutputPath (Join-Path $fixture.Repository 'p.json') } |
-                Should -Throw '*cannot fast-forward*'
-
-            & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch main -CandidateSha $fixture.Head -AllowMerge -Push -OutputPath (Join-Path $fixture.Repository 'promotion-main.json') | Out-Null
-            $record = Get-Content (Join-Path $fixture.Repository 'promotion-main.json') -Raw | ConvertFrom-Json
-            $record.strategy | Should -Be 'merge'
-            $record.approvedSha | Should -Be $fixture.Head.ToLowerInvariant()
-            $record.mergeCommit | Should -Not -BeNullOrEmpty
-            # The QA-approved commit is unchanged and contained by the promotion commit.
-            Invoke-FixtureGit $fixture.Repository @('merge-base','--is-ancestor',$fixture.Head,$record.mergeCommit) | Out-Null
-            $LASTEXITCODE | Should -Be 0
-        } finally { Pop-Location }
-    }
-
-    It 'fails when the promotion branch moved unexpectedly' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $remote = Join-Path $TestDrive "remote-$([guid]::NewGuid().ToString('N')).git"
-        & git init --bare $remote | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('remote','add','origin',$remote) | Out-Null
-        Invoke-FixtureGit $fixture.Repository @('push','origin',"$($fixture.InitialCommit):refs/heads/qa") | Out-Null
-        try {
-            Push-Location $fixture.Repository
-            { & "$PSScriptRoot/../Update-PromotionBranch.ps1" -Branch qa -CandidateSha $fixture.Head -ExpectedSha ('9' * 40) -Push } |
-                Should -Throw '*changed during promotion*'
-        } finally { Pop-Location }
-    }
-}
-
-Describe 'Manifest-driven promotion' {
-    It 'creates the next RC for the candidate commit and requires an RC before stable' {
-        $fixture = New-ReleaseFixtureRepository -Root $TestDrive -Scenario stable
-        $manifest = [pscustomobject]@{
-            schema = 'release-manifest/v1'
-            releaseId = 'beta-test'
-            candidateSha = $fixture.Head.ToLowerInvariant()
-            components = @([pscustomobject]@{ component = 'app'; semanticVersion = '1.3.0-beta.1'; tag = 'app/v1.3.0-beta.1'; imageDigest = $null; archiveSha256 = ('d' * 64) })
-        }
-        try {
-            Push-Location $fixture.Repository
-            { New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel stable } |
-                Should -Throw '*beta -> rc -> stable*'
-
-            $rc = New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel rc
-            $rc.promotions[0].semanticVersion | Should -Be '1.3.0-rc.1'
-            $rc.promotions[0].commit | Should -Be $fixture.Head.ToLowerInvariant()
-
-            Invoke-FixtureGit $fixture.Repository @('tag','app/v1.3.0-rc.1',$fixture.Head) | Out-Null
-            $stable = New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel stable
-            $stable.promotions[0].semanticVersion | Should -Be '1.3.0'
-            $stable.promotions[0].tag | Should -Be 'app/v1.3.0'
-            # Re-running the RC promotion must reuse the RC already on this commit.
-            (New-ManifestPromotionPlan -Config $fixture.Config -Manifest $manifest -TargetChannel rc).promotions[0].semanticVersion | Should -Be '1.3.0-rc.1'
-        } finally { Pop-Location }
-    }
-}
-
 Describe 'Deployment guardrails' {
     It 'refuses a production deployment that cannot prove QA approval' {
         $manifestPath = Join-Path $TestDrive 'release-manifest.json'
@@ -688,7 +581,7 @@ Describe 'Deployment guardrails' {
         $configPath = Join-Path $TestDrive 'deploy-config.json'
         New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'apps/app') | Out-Null
         New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'out/app') | Out-Null
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } } } |
+        @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; package = @{ path = 'out/app' } } } } |
             ConvertTo-Json -Depth 8 | Set-Content $configPath
         try {
             Push-Location $TestDrive
@@ -702,7 +595,7 @@ Describe 'Deployment guardrails' {
     It 'rejects a deployment environment that declares a build step' {
         $configPath = Join-Path $TestDrive 'environment-config.json'
         New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'apps/app') | Out-Null
-        @{ versioning = @{ defaultBump = 'minor' }; branches = @{ main = @{ channel = 'stable' } }
+        @{ versioning = @{ defaultBump = 'minor' };
            environments = @{ production = @{ build = @{ command = 'dotnet publish' } } }
            components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } } } |
             ConvertTo-Json -Depth 8 | Set-Content $configPath

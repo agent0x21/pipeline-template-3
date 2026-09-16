@@ -43,6 +43,7 @@ if ($ApprovedManifestPath) {
 $environmentConfig = if ($config.ContainsKey('environments') -and $config.environments -and $config.environments.ContainsKey($Environment)) { $config.environments[$Environment] } else { @{} }
 $aliasTag = if ($environmentConfig.ContainsKey('aliasTag')) { [string]$environmentConfig.aliasTag } else { '' }
 $deployCommand = if ($environmentConfig.ContainsKey('deploy') -and $environmentConfig.deploy -is [System.Collections.IDictionary] -and $environmentConfig.deploy.ContainsKey('command')) { [string]$environmentConfig.deploy.command } else { '' }
+if (-not $deployCommand) { throw "No deployment target is configured for '$Environment'. Use the artifact handoff workflow for manual installation; preparation is not deployment." }
 
 $deployments = foreach ($component in @($manifest.components)) {
     $name = [string]$component.component

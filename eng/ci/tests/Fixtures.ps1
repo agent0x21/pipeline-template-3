@@ -21,7 +21,7 @@ function New-ReleaseFixtureRepository {
     if ($Scenario -eq 'bootstrap') {
         return @{ Repository = $repository; InitialCommit = $initialCommit; Head = $initialCommit; Config = @{
             versioning = @{ defaultBump = 'minor' }
-            branches = @{ main = @{ channel = 'stable' }; dev = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
+
             components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } }
         } }
     }
@@ -43,12 +43,12 @@ function New-ReleaseFixtureRepository {
     Invoke-FixtureGit $repository @('add','.') | Out-Null
     Invoke-FixtureGit $repository @('commit','-m','Fixture change') | Out-Null
     $head = Invoke-FixtureGit $repository @('rev-parse','HEAD') | Select-Object -First 1
-    if ($Scenario -eq 'rerun') { Invoke-FixtureGit $repository @('tag','app/v1.3.0-beta.1',$head) | Out-Null }
+    if ($Scenario -eq 'rerun') { Invoke-FixtureGit $repository @('tag','app/v1.3.0-rc.1',$head) | Out-Null }
     if ($Scenario -eq 'conflict') { Invoke-FixtureGit $repository @('tag','app/v1.3.0-beta.1',$initialCommit) | Out-Null }
 
     @{ Repository = $repository; InitialCommit = $initialCommit; Head = $head; Config = @{
         versioning = @{ defaultBump = 'minor' }
-        branches = @{ main = @{ channel = 'stable' }; dev = @{ channel = 'beta' }; qa = @{ channel = 'rc' } }
+
         components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } }
     } }
 }

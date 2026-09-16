@@ -8,13 +8,10 @@ runtime:
   operatingSystem: windows
   scripting: pwsh
 
-branches:
-  main:
-    channel: stable
-  qa:
-    channel: rc
-  dev:
-    channel: beta
+environments:
+  DEV: {}
+  QA: {}
+  PROD: {}
 
 components:
   shared-contracts:

@@ -1,0 +1,52 @@
+name: Set up Windows release tools
+description: Validate the runner and install pinned release dependencies
+inputs:
+  build:
+    description: Install build dependencies
+    default: 'false'
+  tests:
+    description: Install Pester
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Validate Windows and PowerShell
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (-not $IsWindows) { throw 'A Windows runner is required.' }
+        foreach ($tool in @('git','pwsh','gh')) {
+          if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Missing tool: $tool" }
+        }
+        git config --global core.longPaths true
+        if (-not (Get-Module -ListAvailable powershell-yaml | Where-Object Version -eq '0.4.12')) {
+          Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser -Force
+        }
+        if ('${{ inputs.tests }}' -eq 'true' -and -not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+        }
+    - uses: pnpm/action-setup@v6
+      if: inputs.build == 'true'
+      with:
+        version: 12.3.4
+    - name: Locate dependency caches
+      if: inputs.build == 'true'
+      id: caches
+      shell: pwsh
+      run: |
+        "pnpm=$(pnpm store path --silent)" >> $env:GITHUB_OUTPUT
+        "nuget=$([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.nuget', 'packages'))" >> $env:GITHUB_OUTPUT
+    - uses: actions/cache@v4
+      if: inputs.build == 'true'
+      with:
+        path: |
+          ${{ steps.caches.outputs.pnpm }}
+          ${{ steps.caches.outputs.nuget }}
+        key: windows-dependencies-${{ hashFiles('**/pnpm-lock.yaml', '**/*.csproj') }}
+    - name: Validate build tools
+      if: inputs.build == 'true'
+      shell: pwsh
+      run: |
+        foreach ($tool in @('dotnet','node','pnpm')) {
+          if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Missing tool: $tool" }
+        }

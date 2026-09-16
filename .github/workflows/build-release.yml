@@ -1,0 +1,116 @@
+name: Build Release Candidate
+run-name: RC from ${{ inputs.source_ref }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: main, full SHA on main, or temporary hotfix/release branch
+        type: string
+        default: main
+      baseline_release:
+        description: Required for temporary branches; stable component or release-set tag
+        type: string
+        default: ''
+      version_bump:
+        description: Default bump; auto uses patch for hotfixes and minor otherwise
+        type: choice
+        options: [auto, minor, patch, major]
+        default: auto
+      component_overrides:
+        description: 'Component bump JSON map, e.g. {"api":"patch"}'
+        type: string
+        default: '{}'
+      exact_versions:
+        description: 'Exact base/RC version JSON map, e.g. {"api":"2.14.4"}'
+        type: string
+        default: '{}'
+      release_all:
+        description: Include unchanged components
+        type: boolean
+        default: false
+permissions:
+  contents: read
+# Publication is serialized; QA approval waits occur in another workflow.
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  candidate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Enable Windows long paths
+        run: git config --global core.longPaths true
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-release
+        with:
+          build: 'true'
+          tests: 'true'
+      - name: Resolve source or recover original run source
+        id: source
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BASELINE_RELEASE: ${{ inputs.baseline_release }}
+          VERSION_BUMP: ${{ inputs.version_bump }}
+        run: |
+          Import-Module ./eng/ci/ReleasePipeline/ReleasePipeline.psd1 -Force
+          $Repository = $env:GITHUB_REPOSITORY
+          . ./eng/ci/providers/github/ReleaseStore.ps1
+          $existing = Get-StoredRelease "release/$env:GITHUB_RUN_ID" -AllowMissing
+          if ($existing) {
+            $path = Get-StoredAsset $existing 'release-plan.json' '.release-resume' -Optional
+            $plan = if ($path) { Get-Content $path -Raw | ConvertFrom-Json } else { $existing.body | ConvertFrom-Json }
+            $sha = $plan.commit
+          } else {
+            $reserved = git rev-parse --verify --quiet "refs/tags/release/$env:GITHUB_RUN_ID^{commit}"
+            if ($LASTEXITCODE -eq 0) { $sha = $reserved.Trim() } else {
+              $source = Resolve-ReleaseSource -SourceRef $env:SOURCE_REF -BaselineRelease $env:BASELINE_RELEASE
+              $sha = $source.sha
+            }
+          }
+          $bump = $env:VERSION_BUMP
+          if ($bump -eq 'auto') { $bump = if ($env:SOURCE_REF.StartsWith('hotfix/')) { 'patch' } else { 'minor' } }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          "bump=$bump" >> $env:GITHUB_OUTPUT
+      - name: Test release tooling
+        run: ./eng/ci/Invoke-ReleasePipelineTests.ps1
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          path: source
+          fetch-depth: 0
+      - name: Configure release identity
+        working-directory: source
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+      - name: Install source dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/ghcr-login
+        with:
+          actor: ${{ github.actor }}
+          token: ${{ github.token }}
+      - name: Build once and publish RC artifacts
+        working-directory: source
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BASELINE_RELEASE: ${{ inputs.baseline_release }}
+          VERSION_BUMP: ${{ steps.source.outputs.bump }}
+          COMPONENT_OVERRIDES: ${{ inputs.component_overrides }}
+          EXACT_VERSIONS: ${{ inputs.exact_versions }}
+          RELEASE_ALL: ${{ inputs.release_all }}
+        run: |
+          ../eng/ci/providers/github/Invoke-ReleaseBuild.ps1 -ConfigPath ../.releasepipeline.yml -ExpectedSha $env:SOURCE_SHA -SourceRef $env:SOURCE_REF -BaselineRelease $env:BASELINE_RELEASE -VersionBump $env:VERSION_BUMP -ComponentOverridesJson $env:COMPONENT_OVERRIDES -ExactVersionsJson $env:EXACT_VERSIONS -ReleaseAll:($env:RELEASE_ALL -eq 'true')

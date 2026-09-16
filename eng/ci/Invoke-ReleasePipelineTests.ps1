@@ -11,6 +11,6 @@ if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version -eq $pest
 
 Import-Module Pester -RequiredVersion $pesterVersion -Force
 $result = Invoke-Pester (Join-Path $PSScriptRoot 'tests') -PassThru
-if ($result.FailedCount -gt 0) {
+if ($result.FailedCount -gt 0 -or $result.TotalCount -eq 0 -or $result.FailedContainersCount -gt 0) {
     exit 1
 }

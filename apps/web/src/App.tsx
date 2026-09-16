@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import { APP_NAME } from "@repo/shared";
+import { getApiUrl } from "./runtimeConfig";
 
 type Forecast = { date: string; temperatureC: number; summary: string };
-
-const apiUrl = "http://localhost:5130/weatherforecast";
 
 function App() {
   const [forecast, setForecast] = useState<Forecast[]>([]);
@@ -13,7 +12,7 @@ function App() {
 
   const loadForecast = useCallback(async () => {
     try {
-      const response = await fetch(apiUrl);
+      const response = await fetch(await getApiUrl());
       if (!response.ok) throw new Error(`API returned ${response.status}`);
       setForecast(await response.json());
       setStatus("Connected to the API");

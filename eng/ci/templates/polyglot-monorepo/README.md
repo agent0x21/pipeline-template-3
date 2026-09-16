@@ -1,12 +1,5 @@
-# Polyglot monorepo template
+# Polyglot monorepo
 
-This template demonstrates independent tags for four components:
+Copy .releasepipeline.yml to the repository root and replace example paths. Components version independently. Shared-contract changes propagate to web and API; legacy desktop uses Windows/MSBuild.
 
-- `contracts/v<SemVer>` for shared contracts.
-- `web/v<SemVer>` for the Node web client.
-- `api/v<SemVer>` for the modern .NET API.
-- `desktop/v<SemVer>` for a legacy .NET Framework desktop application.
-
-Changes to `shared-contracts` also release `web` and `api` because they list it in `dependencies`. A desktop release remains independent in this example.
-
-The legacy component omits `build.command` so the release module discovers `MSBuild.exe` through PATH or `vswhere.exe`. Replace `build.solution` and `package.path` with the real solution and output directory. If the project needs a custom restore/build sequence, use a PowerShell `build.command` instead.
+Use main for integration and temporary branches for work. Select an RC source explicitly, preserve the manifest and promote its bytes after QA/PROD approval. No environment branches or source synchronization are required. Follow [adoption instructions](../README.md).
