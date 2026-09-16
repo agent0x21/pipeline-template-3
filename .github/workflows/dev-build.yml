@@ -1,4 +1,6 @@
 name: DEV Artifacts
+run-name: >-
+  DEV artifacts • ${{ inputs.source_ref }} • ${{ inputs.components || 'all components' }} • image=${{ inputs.push_image }}
 on:
   workflow_dispatch:
     inputs:
@@ -9,7 +11,7 @@ on:
       components:
         description: Comma-separated components; empty builds all
         type: string
-        default: ''
+        default: ""
       push_image:
         description: Publish the API development image
         type: boolean
@@ -24,6 +26,7 @@ defaults:
     shell: pwsh
 jobs:
   build:
+    name: Build DEV artifacts
     if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Windows]
     timeout-minutes: 60
@@ -36,13 +39,18 @@ jobs:
     steps:
       - name: Enable Windows long paths
         run: git config --global core.longPaths true
-      - uses: actions/checkout@v7
+
+      - name: Checkout workflow tooling
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/setup-release
+
+      - name: Set up release tooling
+        uses: ./.github/actions/setup-release
         with:
-          build: 'true'
-          tests: 'true'
+          build: "true"
+          tests: "true"
+
       - name: Resolve main commit
         id: source
         env:
@@ -51,22 +59,62 @@ jobs:
           Import-Module ./eng/ci/ReleasePipeline/ReleasePipeline.psd1 -Force
           $source = Resolve-ReleaseSource -SourceRef $env:SOURCE_REF -Intent dev
           "sha=$($source.sha)" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@v7
+
+      - name: Summarize build request
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          COMPONENTS: ${{ inputs.components }}
+          PUSH_IMAGE: ${{ inputs.push_image }}
+        run: |
+          $components = if ([string]::IsNullOrWhiteSpace($env:COMPONENTS)) {
+            'All components'
+          } else {
+            $env:COMPONENTS
+          }
+
+          @"
+          ## DEV artifact build
+
+          | Setting | Value |
+          | --- | --- |
+          | Source ref | ``$env:SOURCE_REF`` |
+          | Resolved commit | [``$env:SOURCE_SHA``](${{ github.server_url }}/${{ github.repository }}/commit/$env:SOURCE_SHA) |
+          | Components | ``$components`` |
+          | Publish API image | ``$env:PUSH_IMAGE`` |
+          | Environment | ``DEV`` |
+          | Triggered by | @${{ github.actor }} |
+          | Run | #${{ github.run_number }} · attempt ${{ github.run_attempt }} |
+
+          ### Status
+
+          🔄 Building development artifacts…
+
+          No deployment or release tags will be created.
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Checkout requested source
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.source.outputs.sha }}
           path: source
           fetch-depth: 0
           persist-credentials: false
+
       - name: Test release tooling
         run: ./eng/ci/Invoke-ReleasePipelineTests.ps1
+
       - name: Install source dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
-      - uses: ./.github/actions/ghcr-login
+
+      - name: Authenticate to GHCR
+        uses: ./.github/actions/ghcr-login
         if: inputs.push_image
         with:
           actor: ${{ github.actor }}
           token: ${{ github.token }}
+
       - name: Build development artifacts
         working-directory: source
         env:
@@ -76,7 +124,9 @@ jobs:
         run: |
           $components = @($env:COMPONENTS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           ../eng/ci/Invoke-DevelopmentBuild.ps1 -ConfigPath ../.releasepipeline.yml -ExpectedSha $env:SOURCE_SHA -Branch main -Component $components -Push:($env:PUSH_IMAGE -eq 'true')
-      - uses: actions/upload-artifact@v7
+
+      - name: Upload DEV artifacts
+        uses: actions/upload-artifact@v7
         with:
           name: dev-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -84,6 +134,38 @@ jobs:
             source/development-build.json
           retention-days: 7
           if-no-files-found: error
-      - name: Summarize
+
+      - name: Summarize result
+        if: always()
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          JOB_STATUS: ${{ job.status }}
+          ARTIFACT_NAME: dev-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          "## DEV artifacts prepared`n`nSource: [``${{ steps.source.outputs.sha }}``](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.source.outputs.sha }})`n`nDownload this run's artifacts for manual installation. No deployment or release tags were created." >> $env:GITHUB_STEP_SUMMARY
+          $source = if ([string]::IsNullOrWhiteSpace($env:SOURCE_SHA)) {
+            'Unavailable (source resolution did not complete)'
+          } else {
+            "[``$env:SOURCE_SHA``](${{ github.server_url }}/${{ github.repository }}/commit/$env:SOURCE_SHA)"
+          }
+
+          $status = switch ($env:JOB_STATUS) {
+            'success' { '✅ Development artifacts were prepared successfully.' }
+            'failure' { '❌ Development artifact generation did not complete successfully.' }
+            'cancelled' { '⏹️ Development artifact generation was cancelled.' }
+            default { "Status: ``$env:JOB_STATUS``" }
+          }
+
+          @"
+          ## Build result
+
+          **Source:** $source
+
+          **Result:** ``$env:JOB_STATUS``
+
+          $status
+
+          **Artifact:** ``$env:ARTIFACT_NAME``  
+          **Retention:** 7 days
+
+          Download this run's artifacts for manual installation. No deployment or release tags were created.
+          "@ >> $env:GITHUB_STEP_SUMMARY
