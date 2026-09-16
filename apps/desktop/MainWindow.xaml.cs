@@ -7,7 +7,13 @@ namespace NativeApp.Desktop;
 
 public partial class MainWindow : Window
 {
-    private static readonly HttpClient ApiClient = new() { BaseAddress = new Uri("http://localhost:5130/") };
+#if DEBUG
+    private const string ApiBaseUrl = "http://localhost:5130/";
+#else
+    private const string ApiBaseUrl = "http://localhost:5000/";
+#endif
+
+    private static readonly HttpClient ApiClient = new() { BaseAddress = new Uri(ApiBaseUrl) };
 
     public MainWindow()
     {
