@@ -1,21 +1,10 @@
-# Release configuration templates
+# Adoption templates
 
-Copy one of these `.releasepipeline.yml` files to the root of the target repository, then replace the example paths, commands, package directories, and tag prefixes before running a release plan.
+Copy the appropriate .releasepipeline.yml to your repository root and adjust paths and commands. Keep main as the sole permanent branch and use explicit RC creation instead of branch channels.
 
-The existing GitHub Actions workflows, Jenkinsfiles, and PowerShell scripts consume this configuration directly. They do not need a language-specific rewrite.
+- single-application: one independently versioned component.
+- polyglot-monorepo: shared contracts, web, API and a legacy Windows application.
 
-| Template | Use it when |
-| --- | --- |
-| [single-application](single-application) | The repository ships one application as one versioned release unit. |
-| [polyglot-monorepo](polyglot-monorepo) | The repository ships independently versioned Node, modern .NET, and/or legacy .NET Framework components. |
+Adopt the workflows and PowerShell tooling together. Configure Windows runners, DEV/QA/PROD and separate QA/PROD reviewers following [migration](../MIGRATION.md). The examples contain build/test commands for illustrative projects; replace them with commands that exist in your repository. No package manager other than pnpm is needed for JavaScript.
 
-## Adoption checklist
-
-1. Copy the chosen `.releasepipeline.yml` to the repository root.
-2. Replace every example `path`, `package.path`, `build.command`, and `test.command` value.
-3. Choose unique, permanent `tagPrefix` values. Tags become `<tagPrefix>/v<SemVer>`.
-4. Set `initialVersion` only when migrating an existing component without a component-scoped baseline tag. See [MIGRATION.md](../MIGRATION.md).
-5. Run `pwsh ./eng/ci/New-ReleasePlan.ps1 -Branch dev` and review the generated plan before enabling tag pushes.
-6. Configure GitHub Actions or Jenkins with the provider mappings in [PROVIDER-MAPPINGS.md](../PROVIDER-MAPPINGS.md).
-
-`dependencies` controls release propagation: when a dependency changes, its dependents are included in the same plan. It does not install packages or change source references; keep package-manager and project-file dependencies in their native tooling.
+GitHub provider storage and approvals are described in [the release standard](../RELEASE-STANDARD.md).

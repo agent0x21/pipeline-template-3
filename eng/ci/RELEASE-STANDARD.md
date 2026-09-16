@@ -1,98 +1,47 @@
 # Release standard
 
-> Development branches may evolve independently and may create development
-> artifacts on demand for branch-level testing. A formal release candidate begins
-> only when a specific Git SHA is selected for promotion. That release artifact is
-> built once from that SHA, QA validates that exact artifact, and Production
-> deploys the same artifact without rebuilding it. The pipeline automatically
-> promotes the approved source commit into the appropriate protected source
-> branches without requiring humans to manually select SHAs.
+## Identities and lifecycle
 
-## The four states
+- CI validates source without publishing deployable artifacts.
+- DEV is a manually requested build from main history, labelled by source SHA and run/attempt. It creates no semantic tags and cannot be promoted.
+- RC creation is independent of DEV. The default bump is minor, with workflow, component and exact-version overrides. Hotfix auto bump is patch.
+- A release set `release/<run-id>` identifies one selected source SHA and a set of independently versioned components.
+- QA approves the checksum of the complete v2 manifest after manual installation/testing. PROD independently approves stable publication of those exact bytes.
+- No source branch is updated by release automation. No automatic installation runs.
 
-| State | What it is | What creates it | Lifetime |
-| --- | --- | --- | --- |
-| **Development build** | A deployable artifact for branch-level testing. Tagged `dev-<shortSha>`. Not a release candidate. | A developer runs the **Development Artifact** workflow, or adds the `build:dev-artifact` label to a pull request. | Disposable. 7-day workflow retention; registry tags are replaceable. |
-| **Release candidate** | The first immutable artifact. Built exactly once from one exact Git SHA and published with a resolved registry digest. | A release manager runs the **Release Candidate** workflow from a development branch. | Immutable from creation. |
-| **QA-approved release** | A release candidate that QA deployed and signed off, recorded against `git_sha + artifact_digest + release_id`. | A required reviewer approves the `qa-approval` environment. | Immutable. |
-| **Production release** | The QA-approved artifact, deployed to production. Byte-identical to what QA ran. | Automatic, after the QA approval. | Immutable. |
+## Source selection and release scope
 
-## What causes each transition
+Dispatch workflows from main. DEV accepts main or a full SHA reachable from main. RC creation also accepts temporary hotfix/release branches with an explicit stable component or release-set baseline tag that is an ancestor of the selected commit.
 
-```text
-commit on dev/feature-a
-        │  normal CI runs (ci.yml). No artifact.
-        │
-        ├─ developer requests a development artifact ─────────► development build
-        │     dev-build.yml, explicit dispatch or PR label
-        │     SHA captured from the branch/PR head
-        │
-        └─ release manager dispatches release.yml ────────────► release candidate
-              SHA captured from the dispatch context,
-              HEAD verified against it, built once,
-              published, digest resolved, manifest persisted
-                        │
-                        ├─ qa advanced onto the candidate SHA (ff, else merge)
-                        ├─ QA deploys the candidate digest
-                        │
-                        └─ required reviewer approves ────────► QA-approved release
-                                  approval names the SHA,
-                                  release id and digest
-                                    │
-                                    ├─ rc tags + rc image tag (same digest)
-                                    ├─ main advanced onto the approved SHA
-                                    ├─ stable tags on the approved SHA
-                                    │
-                                    └─ production deploys the ► production release
-                                       approved digest, no build
-```
+Resolve the source once; use its full SHA throughout. Release planning compares each component against its highest stable version tag reachable from that SHA. No baseline means bootstrap. Watched shared paths and dependent components participate; unrelated components do not. A requested full release includes all configured components.
 
-A development build never becomes a release candidate. To ship the code a
-development build exercised, dispatch the Release Candidate workflow: it rebuilds
-from the selected SHA under the release rules and that build becomes the one and
-only release artifact.
+RC sequence numbers are globally unique per component/base version. Reachable stable baselines allow an older hotfix line to coexist with newer main versions. Stable versions already allocated anywhere in the repository cannot be reused for a new RC. Existing RCs on the same source must be recovered through their original run instead of rebuilt.
 
-## Identity rules
+## Workflow inputs
 
-```text
-branch        = source-history pointer     (never the identity of a release)
-commit SHA    = exact source identity
-artifact      = exact executable identity  (registry manifest digest)
-environment   = where an artifact is deployed
-```
-
-* `release-manifest.json` is the durable release identity. Every stage after the
-  candidate build consumes it. No stage re-reads the head of `qa` or `main` to
-  decide what to ship.
-* `qa`, `latest`, and `production` image tags exist as convenience aliases. The
-  `sha256:` manifest digest is authoritative and is what deployments resolve.
-* Release tags are immutable markers on the approved source commit:
-  `<component>/v<version>-beta.N`, `qa-approved/<component>/v<version>`,
-  `<component>/v<version>-rc.N`, and `<component>/v<version>`. A published tag is
-  never moved; an attempt to move one fails the release.
-* The artifact is environment independent. Configuration, secrets, endpoints, and
-  feature flags are supplied at deployment time through the environment's
-  `deploy.command` and the `RELEASE_*` variables the pipeline exports.
-
-## Guardrails
-
-The pipeline fails, rather than proceeding, when:
-
-| Condition | Enforced by |
+| Workflow | Inputs |
 | --- | --- |
-| The candidate SHA is not a full, unambiguous Git object name | `Assert-CandidateCommit.ps1` |
-| Checked-out `HEAD` differs from the captured candidate SHA | `Assert-CandidateCommit.ps1`, re-run in the tagging job |
-| An artifact cannot be traced to the candidate SHA | `New-ReleaseManifest` (every release's commit must equal the candidate) |
-| A container release has no resolved registry digest | `New-ReleaseManifest` |
-| QA deployed a digest other than the released digest | `New-QaApprovalRecord.ps1` |
-| Production would deploy a digest other than the approved one | `Assert-ReleaseIdentity`, via `Invoke-EnvironmentDeployment.ps1 -RequireApprovedRelease` |
-| A promoted tag resolves to a different digest | `Publish-PromotedImageTag.ps1` |
-| Production contains application build output | `Assert-NoApplicationBuild.ps1` |
-| An environment declares a build step | `Import-ReleaseConfig` |
-| The approved SHA cannot be safely promoted into `main` | `Update-PromotionBranch.ps1` (no `-AllowMerge`, or merge conflict) |
-| `qa`/`main` changed unexpectedly during promotion | `Update-PromotionBranch.ps1` expected-head check and non-forced push |
-| Two release candidates promote concurrently | `concurrency: release-candidate` plus the non-forced ref update |
-| An existing immutable release tag would move | `New-ReleaseTag` |
+| DEV Artifacts | source_ref (main), components (all), push_image (true) |
+| Build Release Candidate | source_ref (main), baseline_release (temporary sources only), version_bump (auto), component_overrides (JSON), exact_versions (JSON), release_all (false) |
+| Prepare QA | release_id |
+| Promote PROD | release_id, qa_run_id |
 
-Development artifact builds are deliberately outside all of this: they are grouped
-per branch, so an active release or another branch's build never blocks them.
+Auto means minor except for hotfix sources, where it means patch. Exact versions may specify a base version or explicit RC version. Component overrides affect only the named component; unknown names fail.
+
+## Durable records and approval
+
+`release-manifest/v2` records release ID, source SHA/ref, repository/build run, timestamp and each component's version, source tag, ZIP asset name/SHA-256 and optional container image/digest. The manifest is never rewritten during promotion.
+
+Prepare QA verifies every ZIP and checks that each container digest is available. It writes an `artifact-handoff/v2` record with `status=prepared` and `installed=false`. The subsequent protected QA job verifies the same manifest checksum again and records actual reviewer identities from GitHub review history. Approving attests that all listed artifacts were manually installed and tested. The pipeline cannot independently observe manual installation.
+
+`qa-signoff-<qa-run-id>.json` binds sign-off to the manifest checksum. PROD requires this record, a successful Prepare QA workflow on main, and matching GitHub reviewer evidence. It records its own reviewer evidence separately. Bypassing a protection gate is not approval evidence.
+
+Stable releases contain the same ZIP bytes and a copy of the source manifest. Container version aliases must resolve to the original digest. Stable embedded application versions remain those of the RC build. Mutable environment aliases are not release identity.
+
+## Concurrency and recovery
+
+Version allocation and publication share the release-publication concurrency group. Approval waits are separate from RC creation. Git tags are reserved before building; a failed build may reserve an RC number. Never delete/reallocate it to recover a run.
+
+A draft release stores the original plan and staged build bundle before component publication. Retry the original run to reuse that plan, bundle and bytes. Once published, asset names cannot be overwritten with different hashes. A new dispatch is a new release request, not a retry. See [recovery](RECOVERY.md).
+
+GitHub Environments are DEV (no reviewers), QA and PROD (separate required reviewers). Workflows use environment protection without deployment tracking because installation remains manual. Do not add environment-specific compilation or repackaging when connecting future deployment adapters.

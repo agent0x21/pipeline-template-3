@@ -2,7 +2,7 @@ param(
     [string]$ConfigPath = '.releasepipeline.yml',
     [ValidateSet('major','minor','patch')][string]$VersionBump,
     [string]$ComponentOverridesJson = '{}', [string]$ExactVersionsJson = '{}',
-    [string]$Branch = $(git -c "safe.directory=$((Get-Location).Path)" branch --show-current), [string]$BaseRef = 'HEAD~1',
+    [string]$Branch = 'main', [string]$BaseRef = '',
     [string]$CiRunId = $env:GITHUB_RUN_ID, [string]$OutputPath = 'release-plan.json', [switch]$ReleaseAll
 )
 Set-StrictMode -Version Latest; $ErrorActionPreference = 'Stop'

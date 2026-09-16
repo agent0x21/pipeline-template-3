@@ -31,3 +31,7 @@ promotion-main.json
 deployment-qa.json
 deployment-production.json
 testResults.xml
+
+.release-work/
+.release-handoff/
+.release-resume/

@@ -1,0 +1,68 @@
+name: Prepare QA
+run-name: QA ${{ inputs.release_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Release-set identifier from Build Release Candidate (release/123456)
+        required: true
+        type: string
+permissions:
+  contents: read
+  packages: read
+  actions: read
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 30
+    outputs:
+      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
+    steps:
+      - name: Enable Windows long paths
+        run: git config --global core.longPaths true
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-release
+      - uses: ./.github/actions/ghcr-login
+        with:
+          actor: ${{ github.actor }}
+          token: ${{ github.token }}
+      - name: Prepare selected artifacts for manual installation
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: ./eng/ci/providers/github/Invoke-ReleaseHandoff.ps1 -Operation PrepareQA -ReleaseId $env:RELEASE_ID
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qa-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .release-handoff/
+          retention-days: 30
+  signoff:
+    name: QA sign-off for ${{ inputs.release_id }} after manual testing
+    needs: prepare
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 30
+    environment:
+      name: QA
+      deployment: false
+    permissions:
+      contents: write
+      packages: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-release
+      - uses: ./.github/actions/ghcr-login
+        with:
+          actor: ${{ github.actor }}
+          token: ${{ github.token }}
+      - name: Record QA reviewer evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          MANIFEST_SHA256: ${{ needs.prepare.outputs.manifest_sha256 }}
+        run: ./eng/ci/providers/github/Invoke-ReleaseHandoff.ps1 -Operation ApproveQA -ReleaseId $env:RELEASE_ID -ExpectedManifestSha256 $env:MANIFEST_SHA256

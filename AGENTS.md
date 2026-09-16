@@ -8,6 +8,8 @@ This repository is a pnpm workspace. The browser client is in `apps/web` (React,
 
 Read [`eng/ci/ROADMAP.md`](eng/ci/ROADMAP.md) before making CI/CD changes. Keep its checkboxes and “Current focus” section aligned with the implementation, and treat `prompt/main-prompt.md` as the complete product requirements source.
 
+Use `main` as the only permanent branch. DEV and RC artifacts are manually requested; QA and PROD promote a persisted release identity without rebuilding or moving branches. Installation remains manual. Keep roadmap validation/resume notes current, and do not apply live governance settings or delete historical branches/releases as an incidental code change.
+
 ## Build, Test, and Development Commands
 
 Use pnpm 12.3.4, as declared in the root `package.json`.
@@ -28,7 +30,7 @@ Use two-space indentation in JSON, YAML, and frontend code, semicolons in TypeSc
 
 ## Testing Guidelines
 
-No automated test framework or test projects are currently configured. For new behavior, add focused tests with the chosen framework in the relevant app/package, use names that describe the behavior (for example, `rendersEmptyState`), and document the command needed to run them. Until then, verify changes with the build, lint, and manual smoke tests for the affected app.
+The release engine uses Pester 5.7.1 (`pnpm test-ci`). Application test projects are not currently configured. For new behavior, add focused tests in the relevant app/package and document their command. Verify affected applications with builds, lint and manual smoke checks.
 
 ## Commit & Pull Request Guidelines
 

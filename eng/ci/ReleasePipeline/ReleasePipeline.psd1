@@ -6,11 +6,11 @@
     Description = 'Provider-neutral Windows release planning and packaging tools.'
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
-        'Import-ReleaseConfig', 'Get-ReleaseChannel', 'Get-ComponentVersion',
+        'Import-ReleaseConfig', 'Get-ComponentVersion',
         'Get-ChangedComponents', 'New-ReleasePlan', 'New-ArtifactPromotionPlan', 'Invoke-ComponentPackage', 'Invoke-ComponentContainerPackage', 'Invoke-ComponentBuild',
         'New-ReleaseTag',
         'Assert-CandidateCommit', 'Get-ShortSha', 'Get-PushedImageDigest',
-        'New-ReleaseManifest', 'Assert-ReleaseIdentity', 'Get-BranchAdvanceStrategy',
+        'New-ReleaseManifest', 'Assert-ReleaseIdentity', 'Resolve-ReleaseSource', 'Get-ReleaseBaseline',
         'New-ManifestPromotionPlan',
         'Invoke-DevelopmentComponentPackage', 'Invoke-DevelopmentContainerBuild'
     )

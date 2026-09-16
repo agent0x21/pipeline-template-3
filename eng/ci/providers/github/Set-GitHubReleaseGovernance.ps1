@@ -1,148 +1,62 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory)][ValidatePattern('^[^/\s]+/[^/\s]+$')][string]$Repository,
-    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string[]]$Reviewer,
-    # Branches where humans work: normal pull-request review rules apply.
-    [string[]]$DevelopmentBranches = @('dev'),
-    # Branches the release pipeline owns. Humans never push to these; the pipeline
-    # advances them onto the QA-approved commit.
-    [string[]]$PromotionBranches = @('qa', 'main'),
-    # GitHub App slug allowed to advance the promotion branches. The default is the
-    # app behind GITHUB_TOKEN in Actions.
-    [string]$AutomationApp = 'github-actions',
-    [string[]]$Environments = @('development', 'beta', 'qa', 'qa-approval', 'rc', 'production'),
-    # Only these environments gate on a human. 'qa-approval' is the QA sign-off for a
-    # specific release identity; the rest are deployment boundaries.
-    [string[]]$ApprovalEnvironments = @('qa-approval'),
-    [ValidateRange(1, 6)][int]$RequiredApprovingReviewCount = 1,
-    [switch]$PreventSelfReview,
-    [switch]$AllowAdministratorsToBypass,
-    [switch]$PreservePromotionCommits
+    [Parameter(Mandatory)][ValidatePattern('^[\w.-]+/[\w.-]+$')][string]$Repository,
+    [Parameter(Mandatory)][string[]]$QaReviewer,
+    [Parameter(Mandatory)][string[]]$ProductionReviewer,
+    [switch]$AllowSelfReview
 )
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-    throw 'GitHub CLI (gh) is required. Install it from https://cli.github.com/ and run gh auth login.'
-}
-
-function Invoke-GitHubApi {
-    param(
-        [Parameter(Mandatory)][ValidateSet('GET', 'PUT', 'PATCH')][string]$Method,
-        [Parameter(Mandatory)][string]$Endpoint,
-        [object]$Body
-    )
-    $arguments = @('api', $Endpoint, '--method', $Method, '--header', 'Accept: application/vnd.github+json', '--header', 'X-GitHub-Api-Version: 2022-11-28')
-    if ($null -ne $Body) {
-        $json = $Body | ConvertTo-Json -Depth 20 -Compress
-        $output = $json | & gh @arguments '--input' '-' 2>&1
-    } else {
-        $output = & gh @arguments 2>&1
-    }
-    if ($LASTEXITCODE -ne 0) { throw "GitHub API request failed for '$Endpoint': $($output -join ' ')" }
-    return @($output | ForEach-Object { [string]$_ })
-}
-
-function Get-ReviewerReference {
-    param([Parameter(Mandatory)][string]$Reference)
-    if ($Reference -match '^([^/\s]+)/([^/\s]+)$') {
-        $organization = $Matches[1]
-        $teamSlug = $Matches[2]
-        $idText = (Invoke-GitHubApi -Method GET -Endpoint "orgs/$organization/teams/$teamSlug" | Select-Object -Last 1) | ConvertFrom-Json
-        return [pscustomobject]@{ type = 'Team'; id = [int64]$idText.id; reference = $Reference }
-    }
-    $user = (Invoke-GitHubApi -Method GET -Endpoint "users/$Reference" | Select-Object -Last 1) | ConvertFrom-Json
-    return [pscustomobject]@{ type = 'User'; id = [int64]$user.id; reference = $Reference }
-}
-
-& gh auth status *> $null
-if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not authenticated. Run gh auth login before running this script.' }
-
-$reviewers = @($Reviewer | ForEach-Object { Get-ReviewerReference $_ })
-$reviewerPayload = @($reviewers | ForEach-Object { [pscustomobject]@{ type = $_.type; id = $_.id } })
-
-if ($PreservePromotionCommits) {
-    # Optional. The pipeline advances qa and main itself and never squashes or
-    # cherry-picks the approved commit, so this is no longer required for
-    # traceability. It remains useful on development branches: a squash or rebase
-    # merge into dev replaces commits that an in-flight candidate may reference.
-    $mergePolicy = [pscustomobject]@{
-        allow_merge_commit = $true
-        allow_squash_merge = $false
-        allow_rebase_merge = $false
-    }
-    if ($PSCmdlet.ShouldProcess("repository '$Repository'", 'allow only merge commits for pull requests')) {
-        Invoke-GitHubApi -Method PATCH -Endpoint "repos/$Repository" -Body $mergePolicy | Out-Null
-        Write-Host "Configured pull-request merge policy to preserve promotion commits."
-    }
-}
-
-foreach ($branch in $DevelopmentBranches) {
-    $endpoint = "repos/$Repository/branches/$([Uri]::EscapeDataString($branch))/protection"
-    $body = [pscustomobject]@{
-        required_status_checks = [pscustomobject]@{ strict = $true; contexts = @('validate') }
-        enforce_admins = (-not $AllowAdministratorsToBypass)
-        required_pull_request_reviews = [pscustomobject]@{
-            dismiss_stale_reviews = $true
-            require_code_owner_reviews = $false
-            required_approving_review_count = $RequiredApprovingReviewCount
-            require_last_push_approval = $true
+. "$PSScriptRoot/ReleaseStore.ps1"
+if (-not $env:GH_TOKEN) { throw 'Set GH_TOKEN to an administration-capable short-lived token. No token is accepted as a command-line argument.' }
+function Get-Reviewers([string[]]$Names) {
+    foreach ($name in $Names) {
+        if ($name -match '^([^/]+)/([^/]+)$') {
+            $team = & gh api "orgs/$($Matches[1])/teams/$($Matches[2])" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Cannot resolve team '$name'." }
+            @{ type = 'Team'; id = $team.id }
+        } else {
+            $user = & gh api "users/$name" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "Cannot resolve reviewer '$name'." }
+            @{ type = 'User'; id = $user.id }
         }
-        restrictions = $null
-        required_linear_history = $false
-        allow_force_pushes = $false
-        allow_deletions = $false
-        block_creations = $false
-        required_conversation_resolution = $true
-        lock_branch = $false
-        allow_fork_syncing = $false
-    }
-    if ($PSCmdlet.ShouldProcess("branch '$branch'", 'apply development branch protection')) {
-        Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
-        Write-Host "Protected development branch: $branch"
     }
 }
-
-foreach ($branch in $PromotionBranches) {
-    # qa and main are advanced by the pipeline onto the QA-approved commit. Write
-    # access is restricted to the automation identity so a developer cannot move a
-    # release branch by hand, and force pushes and deletions stay disabled so an
-    # approved commit can never be rewritten out of history.
-    $endpoint = "repos/$Repository/branches/$([Uri]::EscapeDataString($branch))/protection"
-    $body = [pscustomobject]@{
-        required_status_checks = $null
-        enforce_admins = (-not $AllowAdministratorsToBypass)
-        required_pull_request_reviews = $null
-        restrictions = [pscustomobject]@{ users = @(); teams = @(); apps = @($AutomationApp) }
-        required_linear_history = $false
-        allow_force_pushes = $false
-        allow_deletions = $false
-        block_creations = $false
-        required_conversation_resolution = $false
-        lock_branch = $false
-        allow_fork_syncing = $false
-    }
-    if ($PSCmdlet.ShouldProcess("branch '$branch'", "restrict pushes to the '$AutomationApp' automation identity")) {
-        Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
-        Write-Host "Protected promotion branch: $branch (writable only by '$AutomationApp')"
+if ($PSCmdlet.ShouldProcess("$Repository/main", 'Require reviewed PRs and successful CI; disallow force pushes and deletion')) {
+    Invoke-ReleaseApi 'branches/main/protection' -Method PUT -Body @{
+        required_status_checks = @{ strict = $true; contexts = @('validate') }
+        enforce_admins = $true
+        required_pull_request_reviews = @{ required_approving_review_count = 1; dismiss_stale_reviews = $true; require_last_push_approval = $true }
+        restrictions = $null; allow_force_pushes = $false; allow_deletions = $false; required_conversation_resolution = $true
+    } | Out-Null
+}
+foreach ($name in @('DEV','QA','PROD')) {
+    if ($PSCmdlet.ShouldProcess("$Repository/$name", 'Configure environment; main workflow ref only, separate required reviewers')) {
+        $reviewers = if ($name -eq 'QA') { @(Get-Reviewers $QaReviewer) } elseif ($name -eq 'PROD') { @(Get-Reviewers $ProductionReviewer) } else { @() }
+        Invoke-ReleaseApi "environments/$name" -Method PUT -Body @{
+            reviewers = $reviewers; prevent_self_review = (-not $AllowSelfReview -and $name -ne 'DEV')
+            can_admins_bypass = $false; wait_timer = 0
+            deployment_branch_policy = @{ protected_branches = $false; custom_branch_policies = $true }
+        } | Out-Null
+        $policies = Invoke-ReleaseApi "environments/$name/deployment-branch-policies"
+        foreach ($policy in $policies.branch_policies) {
+            if ($policy.name -ne 'main' -or $policy.type -ne 'branch') {
+                Invoke-ReleaseApi "environments/$name/deployment-branch-policies/$($policy.id)" -Method DELETE | Out-Null
+            }
+        }
+        if (-not @($policies.branch_policies | Where-Object { $_.name -eq 'main' -and $_.type -eq 'branch' }).Count) {
+            Invoke-ReleaseApi "environments/$name/deployment-branch-policies" -Method POST -Body @{ name = 'main'; type = 'branch' } | Out-Null
+        }
     }
 }
-
-foreach ($environment in $Environments) {
-    $endpoint = "repos/$Repository/environments/$([Uri]::EscapeDataString($environment))"
-    $requiresApproval = $ApprovalEnvironments -contains $environment
-    $body = [pscustomobject]@{
-        wait_timer = 0
-        prevent_self_review = [bool]$PreventSelfReview
-        reviewers = $(if ($requiresApproval) { $reviewerPayload } else { @() })
-        deployment_branch_policy = $null
+if ($PSCmdlet.ShouldProcess($Repository, 'Protect component and release-set tags against updates and deletion')) {
+    $rules = @{ name = 'Immutable release tags'; target = 'tag'; enforcement = 'active'
+        conditions = @{ ref_name = @{ include = @('refs/tags/*/v*','refs/tags/release/*'); exclude = @() } }
+        rules = @(@{ type = 'update' }, @{ type = 'deletion' }); bypass_actors = @()
     }
-    $action = if ($requiresApproval) { 'create/update required reviewers' } else { 'create/update deployment environment' }
-    if ($PSCmdlet.ShouldProcess("environment '$environment'", $action)) {
-        Invoke-GitHubApi -Method PUT -Endpoint $endpoint -Body $body | Out-Null
-        Write-Host "Configured environment: $environment$(if ($requiresApproval) { ' (required reviewers)' })"
-    }
+    $existing = @(Invoke-ReleaseApi 'rulesets?per_page=100' | Where-Object name -eq $rules.name)
+    if ($existing.Count -gt 1) { throw 'Duplicate immutable release tag rulesets; resolve manually.' }
+    if ($existing.Count) { Invoke-ReleaseApi "rulesets/$($existing[0].id)" -Method PUT -Body $rules | Out-Null }
+    else { Invoke-ReleaseApi 'rulesets' -Method POST -Body $rules | Out-Null }
 }
-
-Write-Host "Governance configured for $Repository."
+Write-Host 'Review and retire old promotion-branch rulesets separately. This script never deletes branches or old environments.'

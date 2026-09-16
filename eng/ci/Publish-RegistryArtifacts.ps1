@@ -28,6 +28,7 @@ $results = foreach ($publication in $publications) {
     $oidc = if ($publication.PSObject.Properties.Name -contains 'oidc') { [bool]$publication.oidc } else { $true }
     $tokenEnvironmentVariable = if ($publication.PSObject.Properties.Name -contains 'tokenEnvironmentVariable') { [string]$publication.tokenEnvironmentVariable } else { $null }
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Registry artifact not found: $path" }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $publication.sha256) { throw "Registry artifact checksum mismatch: $path" }
     $description = "$($publication.adapter) publication for $($publication.component) $($publication.semanticVersion)"
     if ($oidc -and -not $tokenEnvironmentVariable) {
         Write-Verbose "$description expects workload identity; the CI provider must authenticate before this step."
@@ -49,7 +50,18 @@ $results = foreach ($publication in $publications) {
                 # The image is re-tagged from the artifact built during candidate
                 # creation. Nothing is rebuilt here, so a promoted tag resolves to
                 # the same registry manifest digest as the candidate image.
+                $remoteId = $null
+                $pull = & docker pull $tag 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $remoteId = (& docker inspect '--format' '{{.Id}}' $tag | Select-Object -First 1)
+                    if ($LASTEXITCODE -ne 0) { throw "Cannot inspect existing image '$tag'." }
+                } elseif (($pull -join ' ') -notmatch 'manifest unknown|not found|manifest.*unknown') {
+                    throw "Cannot check existing image '$tag': $($pull -join ' ')"
+                }
                 Invoke-External 'docker' @('load','--input',$path) $description
+                $loadedId = (& docker inspect '--format' '{{.Id}}' $sourceTag | Select-Object -First 1)
+                if ($LASTEXITCODE -ne 0) { throw "Cannot inspect staged image '$sourceTag'." }
+                if ($remoteId -and $loadedId -ne $remoteId) { throw "Immutable image tag '$tag' already contains another artifact." }
                 if ($sourceTag -ne $tag) { Invoke-External 'docker' @('tag',$sourceTag,$tag) $description }
                 Invoke-External 'docker' @('push',$tag) $description
                 $imageDigest = Get-PushedImageDigest -Image $image -Tag ([string]$publication.semanticVersion)

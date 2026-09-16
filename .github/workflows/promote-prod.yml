@@ -1,0 +1,60 @@
+name: Promote PROD
+run-name: PROD ${{ inputs.release_id }} (QA run ${{ inputs.qa_run_id }})
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: QA-tested release-set identifier (release/123456)
+        required: true
+        type: string
+      qa_run_id:
+        description: Successful Prepare QA workflow run that recorded sign-off
+        required: true
+        type: string
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  promote:
+    name: Approve stable publication of ${{ inputs.release_id }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows]
+    timeout-minutes: 45
+    environment:
+      name: PROD
+      deployment: false
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - name: Enable Windows long paths
+        run: git config --global core.longPaths true
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-release
+      - name: Configure tag identity
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+      - uses: ./.github/actions/ghcr-login
+        with:
+          actor: ${{ github.actor }}
+          token: ${{ github.token }}
+      - name: Promote the QA-approved bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+        run: ./eng/ci/providers/github/Invoke-ReleaseHandoff.ps1 -Operation PromotePROD -ReleaseId $env:RELEASE_ID -QaRunId $env:QA_RUN_ID
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prod-handoff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .release-handoff/
+          retention-days: 30

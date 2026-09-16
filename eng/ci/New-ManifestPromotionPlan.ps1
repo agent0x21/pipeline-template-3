@@ -9,7 +9,7 @@
 param(
     [string]$ConfigPath = '.releasepipeline.yml',
     [Parameter(Mandatory)][string]$ManifestPath,
-    [Parameter(Mandatory)][ValidateSet('rc','stable')][string]$TargetChannel,
+    [ValidateSet('stable')][string]$TargetChannel = 'stable',
     [string]$OutputPath = 'promotion-plan.json'
 )
 
@@ -19,7 +19,7 @@ Import-Module (Join-Path $PSScriptRoot 'ReleasePipeline/ReleasePipeline.psd1') -
 
 $config = Import-ReleaseConfig $ConfigPath
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-if ([string]$manifest.schema -ne 'release-manifest/v1') { throw "'$ManifestPath' is not a release manifest." }
+if ([string]$manifest.schema -ne 'release-manifest/v2') { throw "'$ManifestPath' is not a v2 release manifest." }
 
 $plan = New-ManifestPromotionPlan -Config $config -Manifest $manifest -TargetChannel $TargetChannel
 $plan | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $OutputPath -Encoding utf8
