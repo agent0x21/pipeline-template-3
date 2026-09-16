@@ -3,10 +3,10 @@ description: Validate the runner and install pinned release dependencies
 inputs:
   build:
     description: Install build dependencies
-    default: 'false'
+    default: "false"
   tests:
     description: Install Pester
-    default: 'false'
+    default: "false"
 runs:
   using: composite
   steps:
@@ -36,7 +36,7 @@ runs:
       run: |
         "pnpm=$(pnpm store path --silent)" >> $env:GITHUB_OUTPUT
         "nuget=$([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.nuget', 'packages'))" >> $env:GITHUB_OUTPUT
-    - uses: actions/cache@v4
+    - uses: actions/cache@v6
       if: inputs.build == 'true'
       with:
         path: |
