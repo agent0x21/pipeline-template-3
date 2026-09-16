@@ -33,7 +33,7 @@ if ($PSCmdlet.ShouldProcess("$Repository/main", 'Require reviewed PRs and succes
 }
 foreach ($name in @('DEV','QA','PROD')) {
     if ($PSCmdlet.ShouldProcess("$Repository/$name", 'Configure environment; main workflow ref only, separate required reviewers')) {
-        $reviewers = if ($name -eq 'DEV') { @(Get-Reviewers $DevReviewer) } elseif ($name -eq 'QA') { @(Get-Reviewers $QaReviewer) } else { @(Get-Reviewers $ProductionReviewer) }
+        $reviewers = @(if ($name -eq 'DEV') { Get-Reviewers $DevReviewer } elseif ($name -eq 'QA') { Get-Reviewers $QaReviewer } else { Get-Reviewers $ProductionReviewer })
         Invoke-ReleaseApi "environments/$name" -Method PUT -Body @{
             reviewers = $reviewers; prevent_self_review = (-not $AllowSelfReview)
             can_admins_bypass = $false; wait_timer = 0
