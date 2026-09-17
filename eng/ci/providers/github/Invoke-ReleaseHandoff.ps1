@@ -123,6 +123,20 @@ if ($env:GITHUB_STEP_SUMMARY) {
         '| --- | --- | --- | --- |'
         @($manifest.components | ForEach-Object { "| $($_.component) | $($_.semanticVersion) | $($_.archiveSha256) | $($_.imageDigest) |" })
         ''
-        $(if ($Operation -eq 'PrepareQA') { 'After installing and testing ALL listed artifacts, approve the waiting QA job. Approval attests to this exact manifest.' } else { "Completed: $Operation. QA run identifier for promotion: $($env:GITHUB_RUN_ID)." })
+        if ($Operation -eq 'PrepareQA') {
+            'After installing and testing ALL listed artifacts, approve the waiting QA job. Approval attests to this exact manifest.'
+        } elseif ($Operation -eq 'ApproveQA') {
+            'Completed: QA sign-off recorded.'
+            ''
+            '### Promote PROD inputs'
+            'Run the Promote PROD workflow with these exact values:'
+            ''
+            '| Input | Value |'
+            '| --- | --- |'
+            "| release_id | ``$ReleaseId`` |"
+            "| qa_run_id | ``$($env:GITHUB_RUN_ID)`` |"
+        } else {
+            "Completed: $Operation."
+        }
     ) | Add-Content $env:GITHUB_STEP_SUMMARY
 }
