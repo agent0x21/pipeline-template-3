@@ -41,6 +41,23 @@ function Test-ReleaseConfig {
     if ($Config.versioning.defaultBump -notin @('major','minor','patch')) { throw 'versioning.defaultBump must be major, minor, or patch.' }
     if ($Config.ContainsKey('branches')) { throw 'Branch channels are retired. Pass explicit release intent instead.' }
 
+    if ($Config.ContainsKey('validation')) {
+        if ($Config.validation -isnot [System.Collections.IDictionary]) { throw 'Configuration validation must be a mapping.' }
+        if ($Config.validation.ContainsKey('setup')) {
+            $setup = $Config.validation.setup
+            if ($setup -isnot [System.Collections.IDictionary] -or -not $setup.ContainsKey('command') -or [string]::IsNullOrWhiteSpace([string]$setup.command)) {
+                throw 'Configuration validation.setup requires a nonempty command.'
+            }
+        }
+        if ($Config.validation.ContainsKey('containerSmoke')) {
+            $smoke = $Config.validation.containerSmoke
+            if ($smoke -isnot [System.Collections.IDictionary] -or -not $smoke.ContainsKey('component') -or -not $smoke.ContainsKey('path') -or [string]::IsNullOrWhiteSpace([string]$smoke.component) -or [string]::IsNullOrWhiteSpace([string]$smoke.path)) {
+                throw 'Configuration validation.containerSmoke requires component and path.'
+            }
+            if (-not $Config.components.ContainsKey([string]$smoke.component)) { throw "Configuration validation.containerSmoke references unknown component '$($smoke.component)'." }
+        }
+    }
+
     if ($Config.ContainsKey('environments') -and $Config.environments) {
         if ($Config.environments -isnot [System.Collections.IDictionary]) { throw 'Configuration environments must be a mapping.' }
         foreach ($environment in $Config.environments.Keys) {
@@ -68,6 +85,9 @@ function Test-ReleaseConfig {
         if ($component.ContainsKey('build') -and $component.build -is [System.Collections.IDictionary] -and $component.build.ContainsKey('solution') -and $component.build.solution) {
             $solutionPath = Test-ReleaseConfigPath -Value ([string]$component.build.solution) -ConfigDirectory $ConfigDirectory -Description "Component '$name' build.solution"
             if (-not (Test-Path -LiteralPath $solutionPath -PathType Leaf)) { throw "Component '$name' build.solution does not exist: $($component.build.solution)" }
+        }
+        if ($component.ContainsKey('validation') -and ($component.validation -isnot [System.Collections.IDictionary] -or -not $component.validation.ContainsKey('command') -or [string]::IsNullOrWhiteSpace([string]$component.validation.command))) {
+            throw "Component '$name' validation requires a nonempty command."
         }
     }
 

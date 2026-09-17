@@ -8,6 +8,7 @@ Describe 'Release configuration and channels' {
         $config.versioning.defaultBump | Should -Be 'minor'
         $config.ContainsKey('branches') | Should -BeFalse
         $config.environments.Keys | Should -Contain 'PROD'
+        $config.validation.setup.command | Should -Be 'pnpm install --frozen-lockfile'
     }
 }
 
@@ -48,6 +49,16 @@ Describe 'Release configuration validation' {
         { Import-ReleaseConfig $configPath } | Should -Throw '*missing dependency*'
     }
 
+    It 'requires a valid validation setup command when validation is configured' {
+        @{ versioning = @{ defaultBump = 'minor' }; validation = @{ setup = @{} }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*validation.setup requires a nonempty command*'
+    }
+
+    It 'rejects a container smoke test that references an unknown component' {
+        @{ versioning = @{ defaultBump = 'minor' }; validation = @{ containerSmoke = @{ component = 'missing'; path = '/health' } }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app' } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        { Import-ReleaseConfig $configPath } | Should -Throw '*references unknown component*'
+    }
+
     It 'rejects dependency cycles, duplicate prefixes, and paths outside the repository' {
         @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'shared'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*duplicates tagPrefix*'
@@ -57,6 +68,24 @@ Describe 'Release configuration validation' {
 
         @{ versioning = @{ defaultBump = 'minor' }; components = @{ app = @{ path = 'apps/app'; tagPrefix = 'app'; dependencies = @('worker') }; worker = @{ path = 'apps/app'; tagPrefix = 'worker'; dependencies = @('app') } } } | ConvertTo-Json -Depth 8 | Set-Content $configPath
         { Import-ReleaseConfig $configPath } | Should -Throw '*contains a cycle*'
+    }
+}
+
+Describe 'Configured validation' {
+    It 'runs setup, tests, and builds solely from the selected configuration' {
+        $componentPath = Join-Path $TestDrive 'components/alpha'
+        New-Item -ItemType Directory -Force -Path $componentPath | Out-Null
+        $marker = Join-Path $TestDrive 'validation-order.txt'
+        $configPath = Join-Path $TestDrive 'release-config.json'
+        $quotedMarker = $marker.Replace("'", "''")
+        @{ versioning = @{ defaultBump = 'minor' }
+           validation = @{ setup = @{ command = "Set-Content -LiteralPath '$quotedMarker' -Value setup" } }
+           components = @{ alpha = @{ path = 'components/alpha'; tagPrefix = 'alpha'; test = @{ command = "Add-Content -LiteralPath '$quotedMarker' -Value test" }; validation = @{ command = "Add-Content -LiteralPath '$quotedMarker' -Value validate" }; build = @{ command = "Add-Content -LiteralPath '$quotedMarker' -Value release-build" } } } } |
+            ConvertTo-Json -Depth 12 | Set-Content $configPath
+
+        & "$PSScriptRoot/../Invoke-ConfiguredValidation.ps1" -ConfigPath $configPath
+
+        Get-Content -LiteralPath $marker | Should -Be @('setup', 'test', 'validate')
     }
 }
 

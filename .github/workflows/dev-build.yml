@@ -13,7 +13,7 @@ on:
         type: string
         default: ""
       push_image:
-        description: Publish the API development image
+        description: Publish configured development container images
         type: boolean
         default: true
 permissions:
@@ -81,7 +81,7 @@ jobs:
           | Source ref | ``$env:SOURCE_REF`` |
           | Resolved commit | [``$env:SOURCE_SHA``](${{ github.server_url }}/${{ github.repository }}/commit/$env:SOURCE_SHA) |
           | Components | ``$components`` |
-          | Publish API image | ``$env:PUSH_IMAGE`` |
+          | Publish container images | ``$env:PUSH_IMAGE`` |
           | Environment | ``DEV`` |
           | Triggered by | @${{ github.actor }} |
           | Run | #${{ github.run_number }} · attempt ${{ github.run_attempt }} |
@@ -104,9 +104,9 @@ jobs:
       - name: Test release tooling
         run: ./eng/ci/Invoke-ReleasePipelineTests.ps1
 
-      - name: Install source dependencies
+      - name: Set up configured source dependencies
         working-directory: source
-        run: pnpm install --frozen-lockfile
+        run: ../eng/ci/Invoke-ConfiguredValidation.ps1 -ConfigPath ../.releasepipeline.yml -SetupOnly
 
       - name: Authenticate to GHCR
         uses: ./.github/actions/ghcr-login

@@ -27,13 +27,5 @@ jobs:
           tests: 'true'
       - name: Validate release engine and workflows
         run: ./eng/ci/Invoke-ReleasePipelineTests.ps1
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Lint web
-        run: pnpm --filter ./apps/web lint
-      - name: Build web
-        run: pnpm build-web
-      - name: Build API
-        run: dotnet build apps/api -c Release
-      - name: Build desktop
-        run: dotnet build apps/desktop -c Release
+      - name: Validate configured components
+        run: ./eng/ci/Invoke-ConfiguredValidation.ps1 -ConfigPath .releasepipeline.yml

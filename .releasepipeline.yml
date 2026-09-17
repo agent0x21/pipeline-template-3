@@ -7,6 +7,16 @@ runtime:
   operatingSystem: windows
   scripting: pwsh
 
+validation:
+  setup:
+    command: pnpm install --frozen-lockfile
+  containerSmoke:
+    component: api
+    path: /weatherforecast
+    containerPort: 8080
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+
 watchPaths:
   [
     pnpm-lock.yaml,
@@ -33,6 +43,8 @@ components:
       command: pnpm --filter ./apps/web build
     test:
       command: pnpm --filter ./apps/web lint
+    validation:
+      command: pnpm build-web
     package:
       path: apps/web/dist
   api:
@@ -41,6 +53,8 @@ components:
     tagPrefix: api
     build:
       command: dotnet publish ./apps/api -c Release -o .release-output/api
+    validation:
+      command: dotnet build ./apps/api -c Release
     package:
       path: .release-output/api
     publishing:
@@ -56,5 +70,7 @@ components:
     tagPrefix: desktop
     build:
       command: dotnet publish ./apps/desktop -c Release -o .release-output/desktop
+    validation:
+      command: dotnet build ./apps/desktop -c Release
     package:
       path: .release-output/desktop

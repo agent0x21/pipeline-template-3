@@ -17,11 +17,11 @@ on:
         options: [auto, minor, patch, major]
         default: auto
       component_overrides:
-        description: 'Component bump JSON map, e.g. {"api":"patch"}'
+        description: 'Component bump JSON map, e.g. {"component":"patch"}'
         type: string
         default: '{}'
       exact_versions:
-        description: 'Exact base/RC version JSON map, e.g. {"api":"2.14.4"}'
+        description: 'Exact base/RC version JSON map, e.g. {"component":"2.14.4"}'
         type: string
         default: '{}'
       release_all:
@@ -95,9 +95,9 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-      - name: Install source dependencies
+      - name: Set up configured source dependencies
         working-directory: source
-        run: pnpm install --frozen-lockfile
+        run: ../eng/ci/Invoke-ConfiguredValidation.ps1 -ConfigPath ../.releasepipeline.yml -SetupOnly
       - uses: ./.github/actions/ghcr-login
         with:
           actor: ${{ github.actor }}
