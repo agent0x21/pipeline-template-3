@@ -69,15 +69,25 @@ if ($Operation -eq 'PromotePROD') {
         if ($stable) {
             $identity = Get-StoredAsset $stable 'source-release-manifest.json' "$OutputDirectory/$($entry.component)" -Optional
             if (-not $identity -and $stable.draft) {
-                $reservation = $stable.body | ConvertFrom-Json
+                $reservation = ConvertFrom-FencedJsonBlock $stable.body
                 if ($reservation.manifestSha256 -ne $hash -or $reservation.releaseId -ne $ReleaseId) { throw 'Stable release reservation belongs to another RC.' }
                 Add-StoredAsset $stable $manifestPath 'source-release-manifest.json'
                 $identity = $manifestPath
             }
             if (-not $identity -or (Get-FileHash $identity).Hash.ToLowerInvariant() -ne $hash) { throw "Stable release '$($entry.tag)' belongs to another RC or has incomplete identity. Recover it before proceeding." }
         } else {
-            $reservation = @{ releaseId = $ReleaseId; manifestSha256 = $hash; installed = $false } | ConvertTo-Json -Compress
-            $stable = Invoke-ReleaseApi -Path 'releases' -Method POST -Body @{ tag_name = $entry.tag; target_commitish = $manifest.candidateSha; draft = $true; name = "$($entry.component) v$($entry.semanticVersion)"; body = $reservation }
+            # The draft body binds this stable tag to one RC manifest; it stays in a fenced
+            # JSON block so it renders readably while remaining machine-parseable above.
+            $reservationBody = @(
+                "Reservation for a promoted RC. Do not publish until the promotion completes."
+                ''
+                '<details><summary>Raw reservation data (used for automatic recovery — do not edit)</summary>'
+                ''
+                (ConvertTo-FencedJsonBlock @{ releaseId = $ReleaseId; manifestSha256 = $hash; installed = $false })
+                ''
+                '</details>'
+            ) -join "`n"
+            $stable = Invoke-ReleaseApi -Path 'releases' -Method POST -Body @{ tag_name = $entry.tag; target_commitish = $manifest.candidateSha; draft = $true; name = "$($entry.component) v$($entry.semanticVersion)"; body = $reservationBody }
             Add-StoredAsset $stable $manifestPath 'source-release-manifest.json'
         }
         New-ReleaseTag -Release $entry -Push | Out-Null

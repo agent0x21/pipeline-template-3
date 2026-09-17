@@ -87,6 +87,22 @@ function Add-StoredAsset {
     }
 }
 
+function ConvertTo-FencedJsonBlock {
+    param([object]$Value)
+    $fence = '```'
+    $json = $Value | ConvertTo-Json -Depth 30
+    @("${fence}json", $json, $fence) -join "`n"
+}
+
+function ConvertFrom-FencedJsonBlock {
+    param([string]$Body)
+    $fence = '```'
+    $pattern = [regex]::Escape($fence) + 'json\r?\n(.*?)\r?\n' + [regex]::Escape($fence)
+    $match = [regex]::Match($Body, $pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($match.Success) { return $match.Groups[1].Value | ConvertFrom-Json }
+    return $Body | ConvertFrom-Json
+}
+
 function Save-ReleaseJson {
     param([object]$Value, [string]$Path)
     $Value | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $Path -Encoding utf8

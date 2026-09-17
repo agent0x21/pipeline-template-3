@@ -75,6 +75,20 @@ Describe 'Durable GitHub release store' {
         { Add-StoredAsset $release $path } | Should -Throw '*status=422*'
         Should -Invoke Invoke-RestMethod -Times 1
     }
+    It 'round-trips values through a fenced JSON block' {
+        $value = @{ releaseId = 'release/456'; manifestSha256 = ('a' * 64); installed = $false }
+        $block = ConvertTo-FencedJsonBlock $value
+        $block | Should -Match '```json'
+        $body = @('Human-readable summary line.', '', $block) -join "`n"
+        $parsed = ConvertFrom-FencedJsonBlock $body
+        $parsed.releaseId | Should -Be 'release/456'
+        $parsed.installed | Should -Be $false
+    }
+    It 'still parses a legacy body that is raw JSON with no fenced block' {
+        $legacyBody = @{ releaseId = 'release/456'; manifestSha256 = ('a' * 64) } | ConvertTo-Json -Compress
+        $parsed = ConvertFrom-FencedJsonBlock $legacyBody
+        $parsed.releaseId | Should -Be 'release/456'
+    }
     It 'peels annotated tags and rejects a changed source commit' {
         Mock Invoke-ReleaseApi {
             if ($Path -like 'git/ref/*') { [pscustomobject]@{ object = [pscustomobject]@{ type = 'tag'; sha = 'b' * 40 } } }

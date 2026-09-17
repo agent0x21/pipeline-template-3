@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force $work | Out-Null
 $planPath = Join-Path $work 'release-plan.json'
 if ($release) {
     if (-not (Get-StoredAsset $release 'release-plan.json' $work -Optional)) {
-        Save-ReleaseJson ($release.body | ConvertFrom-Json) $planPath
+        Save-ReleaseJson (ConvertFrom-FencedJsonBlock $release.body) $planPath
         Add-StoredAsset $release $planPath
     }
     $plan = Get-Content $planPath -Raw | ConvertFrom-Json
@@ -38,8 +38,20 @@ if ($release) {
     $plan | Add-Member configSha256 (Get-FileHash $ConfigPath).Hash.ToLowerInvariant()
     Save-ReleaseJson $plan $planPath
     New-ReleaseTag -Release ([pscustomobject]@{ tag = $releaseId; commit = $ExpectedSha; component = 'release-set'; semanticVersion = $RunId }) -Push | Out-Null
-    # The draft body is a backup plan if uploading the plan asset is interrupted.
-    $release = Invoke-ReleaseApi -Path 'releases' -Method POST -Body @{ tag_name = $releaseId; target_commitish = $ExpectedSha; name = $releaseId; draft = $true; prerelease = $true; body = ($plan | ConvertTo-Json -Depth 30) }
+    # The draft body is a backup plan if uploading the plan asset is interrupted; it stays
+    # in a fenced JSON block so it renders readably while remaining machine-parseable above.
+    $componentSummary = ($plan.releases | ForEach-Object { "$($_.component) v$($_.semanticVersion)" }) -join ', '
+    $releaseBody = @(
+        "Release set for commit " + '`' + $ExpectedSha + '`' + " on " + '`' + $SourceRef + '`' + "."
+        "Components: $componentSummary"
+        ''
+        '<details><summary>Raw release plan (used for automatic recovery — do not edit)</summary>'
+        ''
+        (ConvertTo-FencedJsonBlock $plan)
+        ''
+        '</details>'
+    ) -join "`n"
+    $release = Invoke-ReleaseApi -Path 'releases' -Method POST -Body @{ tag_name = $releaseId; target_commitish = $ExpectedSha; name = $releaseId; draft = $true; prerelease = $true; body = $releaseBody }
     Add-StoredAsset $release $planPath
 }
 # Reserve versions before building so a failed run cannot lose its version to another run.
