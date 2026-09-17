@@ -21,6 +21,78 @@ function Resolve-DownloadedArtifactPath {
     return $matches[0].FullName
 }
 
+function Test-GitHubReleaseAssetPresent {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Sha256,
+        [Parameter(Mandatory)][string]$TagName,
+        [AllowNull()][object[]]$Assets
+    )
+    $existing = @($Assets | Where-Object { $_ -and $_.name -eq $Name })
+    if ($existing.Count -gt 1) { throw "GitHub release '$TagName' contains multiple assets named '$Name'." }
+    if ($existing.Count -eq 0) { return $false }
+    if ([string]$existing[0].digest -ne "sha256:$Sha256") { throw "GitHub release asset '$Name' already exists for '$TagName' with a different or unavailable SHA-256 digest." }
+    return $true
+}
+
+function Get-GitHubApiErrorDetail {
+    param([Parameter(Mandatory)]$ErrorRecord)
+    $statusCode = $null
+    $retryAfterSeconds = $null
+    $body = $null
+    $response = $null
+    if ($ErrorRecord.Exception.PSObject.Properties.Name -contains 'Response' -and $ErrorRecord.Exception.Response) {
+        $response = $ErrorRecord.Exception.Response
+    }
+    if ($response) {
+        try { $statusCode = [int]$response.StatusCode } catch {}
+        if ($response.PSObject.Properties.Name -contains 'Headers' -and $response.Headers) {
+            try {
+                $retryAfter = $response.Headers.RetryAfter
+                if ($retryAfter -and $retryAfter.Delta) { $retryAfterSeconds = [math]::Ceiling($retryAfter.Delta.Value.TotalSeconds) }
+                elseif ($retryAfter -and $retryAfter.Date) { $retryAfterSeconds = [math]::Max(0, [math]::Ceiling(($retryAfter.Date.Value - [DateTimeOffset]::UtcNow).TotalSeconds)) }
+            } catch {}
+            if (-not $retryAfterSeconds) {
+                try {
+                    $rawValues = $null
+                    if ($response.Headers.TryGetValues('Retry-After', [ref]$rawValues) -and $rawValues) {
+                        $raw = @($rawValues)[0]
+                        if ($raw -match '^\d+$') { $retryAfterSeconds = [int]$raw }
+                        else {
+                            $parsedDate = [DateTimeOffset]::MinValue
+                            if ([DateTimeOffset]::TryParse($raw, [ref]$parsedDate)) { $retryAfterSeconds = [math]::Max(0, [math]::Ceiling(($parsedDate - [DateTimeOffset]::UtcNow).TotalSeconds)) }
+                        }
+                    }
+                } catch {}
+            }
+        }
+    }
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $body = $ErrorRecord.ErrorDetails.Message }
+    if (-not $body -and $response -and $response.PSObject.Properties.Name -contains 'Content' -and $response.Content) {
+        try { $body = $response.Content.ReadAsStringAsync().Result } catch {}
+    }
+    if (-not $body) { $body = $ErrorRecord.Exception.Message }
+    [pscustomobject]@{ StatusCode = $statusCode; Body = $body; RetryAfterSeconds = $retryAfterSeconds }
+}
+
+function Test-GitHubApiErrorRetryable {
+    param([AllowNull()][Nullable[int]]$StatusCode)
+    # No status code at all means the request never got a response (timeout, DNS
+    # failure, dropped connection): transient by nature. 408/429/5xx are GitHub's
+    # documented retryable signals; everything else (401/403/404/409/422/...) is a
+    # permanent auth/validation problem that a retry cannot fix.
+    if (-not $StatusCode) { return $true }
+    if ($StatusCode -eq 408 -or $StatusCode -eq 429) { return $true }
+    if ($StatusCode -ge 500) { return $true }
+    return $false
+}
+
+function Get-GitHubApiRetryDelaySeconds {
+    param([Parameter(Mandatory)][int]$Attempt, [AllowNull()][Nullable[int]]$RetryAfterSeconds)
+    if ($RetryAfterSeconds -and $RetryAfterSeconds -gt 0) { return $RetryAfterSeconds }
+    return [math]::Pow(2, $Attempt - 1)
+}
+
 function Publish-GitHubReleaseAsset {
     param(
         [Parameter(Mandatory)]$GitHubRelease,
@@ -30,20 +102,49 @@ function Publish-GitHubReleaseAsset {
         [Parameter(Mandatory)][hashtable]$Headers,
         [Parameter(Mandatory)][string]$Repository,
         [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$ContentType
+        [Parameter(Mandatory)][string]$ContentType,
+        [int]$MaxAttempts = 5
     )
-    $existing = @($GitHubRelease.assets | Where-Object { $_.name -eq $Name })
-    if ($existing.Count -gt 1) { throw "GitHub release '$($GitHubRelease.tag_name)' contains multiple assets named '$Name'." }
-    if ($existing.Count -eq 1) {
-        if ([string]$existing[0].digest -eq "sha256:$Sha256") {
-            Write-Host "GitHub release asset already exists for $($GitHubRelease.tag_name): $Name"
-            return
-        }
-        throw "GitHub release asset '$Name' already exists for '$($GitHubRelease.tag_name)' with a different or unavailable SHA-256 digest."
+    $tagName = [string]$GitHubRelease.tag_name
+    if (Test-GitHubReleaseAssetPresent -Name $Name -Sha256 $Sha256 -TagName $tagName -Assets $GitHubRelease.assets) {
+        Write-Host "GitHub release asset already exists for ${tagName}: $Name"
+        return
     }
+
     $uploadUri = "https://uploads.github.com/repos/$Repository/releases/$($GitHubRelease.id)/assets?name=$([uri]::EscapeDataString($Name))&label=$([uri]::EscapeDataString($Label))"
-    Invoke-RestMethod -Method Post -Uri $uploadUri -Headers $Headers -ContentType $ContentType -InFile $Path | Out-Null
-    Write-Host "Uploaded GitHub release asset for $($GitHubRelease.tag_name): $Name"
+    $assetsUri = "https://api.github.com/repos/$Repository/releases/$($GitHubRelease.id)/assets?per_page=100"
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Host "Uploading GitHub release asset for ${tagName}: $Name (attempt $attempt of $MaxAttempts)"
+        try {
+            Invoke-RestMethod -Method Post -Uri $uploadUri -Headers $Headers -ContentType $ContentType -InFile $Path | Out-Null
+            Write-Host "Uploaded GitHub release asset for ${tagName}: $Name"
+            return
+        } catch {
+            $detail = Get-GitHubApiErrorDetail -ErrorRecord $_
+
+            # The upload may have succeeded server-side even though the client observed
+            # a failure (dropped connection, timeout, proxy error). Re-check the live
+            # asset list before retrying so a retry never tries to recreate an asset
+            # GitHub already stored.
+            $liveAssets = $null
+            try { $liveAssets = @(Invoke-RestMethod -Method Get -Uri $assetsUri -Headers $Headers) } catch {}
+            if ($liveAssets -and (Test-GitHubReleaseAssetPresent -Name $Name -Sha256 $Sha256 -TagName $tagName -Assets $liveAssets)) {
+                Write-Host "GitHub release asset for ${tagName} was already stored despite an upload error on attempt $attempt of ${MaxAttempts}: $Name"
+                return
+            }
+
+            $isLastAttempt = $attempt -eq $MaxAttempts
+            $retryable = Test-GitHubApiErrorRetryable -StatusCode $detail.StatusCode
+            if (-not $retryable -or $isLastAttempt) {
+                throw "Failed to upload GitHub release asset '$Name' for release '$tagName' (attempt $attempt of $MaxAttempts, status=$($detail.StatusCode)): $($detail.Body)"
+            }
+
+            $delaySeconds = Get-GitHubApiRetryDelaySeconds -Attempt $attempt -RetryAfterSeconds $detail.RetryAfterSeconds
+            Write-Warning "Transient failure uploading GitHub release asset '$Name' for '$tagName' (attempt $attempt of $MaxAttempts, status=$($detail.StatusCode)): $($detail.Body). Retrying in $delaySeconds second(s)."
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
 }
 
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json

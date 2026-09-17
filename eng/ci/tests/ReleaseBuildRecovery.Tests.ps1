@@ -34,7 +34,10 @@ Describe 'RC publication recovery integration' {
                 $name = [uri]::UnescapeDataString(($uriObject.Query -replace '^\?name=', '' -split '&')[0])
                 $release = $global:ReleaseHttpFixture.store[$releaseId]
                 if ($release.tag_name -like 'app/*' -and $name.EndsWith('.zip') -and $global:ReleaseHttpFixture.failOnce) {
-                    $global:ReleaseHttpFixture.failOnce = $false
+                    # Stays failing for the whole first job attempt (Publish-GitHubReleaseAssets.ps1
+                    # retries transient upload failures in-process, so a single throw would just be
+                    # absorbed); the test clears failOnce once that first job attempt has crashed and
+                    # exhausted its retries, before simulating the job rerun.
                     throw 'Simulated component publication interruption'
                 }
                 $global:ReleaseHttpFixture.nextAssetId++
@@ -92,6 +95,7 @@ Describe 'RC publication recovery integration' {
             $assetId = [int](([uri]$Uri).Segments[-1])
             Copy-Item -LiteralPath $global:ReleaseHttpFixture.assetStore[$assetId] -Destination $OutFile -Force
         }
+        Mock Start-Sleep {}
         $previousToken = $env:GH_TOKEN
         $previousRun = $env:GITHUB_RUN_ID
         $previousSummary = $env:GITHUB_STEP_SUMMARY
@@ -107,6 +111,7 @@ Describe 'RC publication recovery integration' {
             $fixture.Config | ConvertTo-Json -Depth 12 | Set-Content config.json
             $arguments = @{ ConfigPath = 'config.json'; ExpectedSha = $fixture.Head; Repository = 'fixture/repository'; RunId = '123' }
             { & "$PSScriptRoot/../providers/github/Invoke-ReleaseBuild.ps1" @arguments } | Should -Throw '*Simulated component publication interruption*'
+            $global:ReleaseHttpFixture.failOnce = $false
             $manifestHash = (Get-FileHash '.release-work/release-manifest.json').Hash
             { & "$PSScriptRoot/../providers/github/Invoke-ReleaseBuild.ps1" @arguments } | Should -Not -Throw
             @(Get-Content build-count.txt).Count | Should -Be 1

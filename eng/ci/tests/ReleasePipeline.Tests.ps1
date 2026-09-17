@@ -283,6 +283,205 @@ Describe 'GitHub release asset publication' {
     }
 }
 
+Describe 'GitHub release asset upload retries' {
+    BeforeAll {
+        function New-GitHubAssetUploadFixture {
+            param([Parameter(Mandatory)]$TestDrive)
+            $bundlePath = Join-Path $TestDrive 'bundle'
+            $artifactPath = Join-Path $bundlePath 'artifacts'
+            $assetPath = Join-Path $artifactPath 'web/web-v1.0.0.zip'
+            New-Item -ItemType Directory -Force -Path (Split-Path $assetPath) | Out-Null
+            Set-Content -LiteralPath $assetPath -Value 'web artifact'
+            $provenancePath = Join-Path $artifactPath 'provenance.json'
+            $planPath = Join-Path $bundlePath 'release-plan.json'
+            $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $releasePlan = [pscustomobject]@{ releases = @(
+                [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0'; channel = 'stable'; tag = 'web/v1.0.0'; commit = 'abc123' }
+            ) }
+            [pscustomobject]@{
+                plan = $releasePlan
+                artifacts = @(
+                    [pscustomobject]@{ component = 'web'; semanticVersion = '1.0.0'; path = 'D:\original\artifacts\web\web-v1.0.0.zip'; sha256 = $hash; artifactType = 'zip' }
+                )
+            } | ConvertTo-Json -Depth 12 | Set-Content $provenancePath
+            $releasePlan | ConvertTo-Json -Depth 12 | Set-Content $planPath
+            [pscustomobject]@{ PlanPath = $planPath; ProvenancePath = $provenancePath; Sha256 = $hash }
+        }
+
+        function New-GitHubUploadFailure {
+            param([int]$StatusCode, [string]$Message = 'transient failure', [string]$Body)
+            $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]$StatusCode)
+            if ($Body) { $response.Content = [System.Net.Http.StringContent]::new($Body) }
+            $ex = [System.Net.Http.HttpRequestException]::new($Message)
+            $ex | Add-Member -NotePropertyName Response -NotePropertyValue $response -Force
+            $ex
+        }
+
+        function Invoke-PublishScript {
+            param($PlanPath, $ProvenancePath)
+            $oldRepository = $env:GITHUB_REPOSITORY; $oldToken = $env:GITHUB_TOKEN
+            try {
+                $env:GITHUB_REPOSITORY = 'example/repository'; $env:GITHUB_TOKEN = 'test-token'
+                & "$PSScriptRoot/../providers/github/Publish-GitHubReleaseAssets.ps1" -PlanPath $PlanPath -ProvenancePath $ProvenancePath
+            } finally {
+                $env:GITHUB_REPOSITORY = $oldRepository; $env:GITHUB_TOKEN = $oldToken
+            }
+        }
+    }
+
+    It 'retries a transient upload failure and succeeds' {
+        $fixture = New-GitHubAssetUploadFixture -TestDrive $TestDrive
+        Mock Start-Sleep {}
+        $global:ghUploadAttempts = 0
+        Mock Invoke-RestMethod {
+            if ($Method -eq 'Get' -and $Uri -like '*/tags/*') { return [pscustomobject]@{ id = 1; tag_name = 'web/v1.0.0'; assets = @() } }
+            if ($Method -eq 'Get' -and $Uri -like '*/assets?per_page=100') { return @() }
+            if ($Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*') {
+                $global:ghUploadAttempts++
+                if ($global:ghUploadAttempts -lt 3) { throw (New-GitHubUploadFailure -StatusCode 503 -Message 'Error creating asset temp dir' -Body '{"message":"Error creating asset temp dir"}') }
+                return $null
+            }
+            return $null
+        }
+
+        try {
+            { Invoke-PublishScript -PlanPath $fixture.PlanPath -ProvenancePath $fixture.ProvenancePath } | Should -Not -Throw
+            $global:ghUploadAttempts | Should -Be 3
+            Should -Invoke Invoke-RestMethod -ParameterFilter { $Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*' } -Times 3 -Exactly
+        } finally {
+            Remove-Item -LiteralPath Variable:\ghUploadAttempts -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'exhausts retries and reports the release tag, asset name, status, body, and attempt count' {
+        $fixture = New-GitHubAssetUploadFixture -TestDrive $TestDrive
+        Mock Start-Sleep {}
+        Mock Invoke-RestMethod {
+            if ($Method -eq 'Get' -and $Uri -like '*/tags/*') { return [pscustomobject]@{ id = 1; tag_name = 'web/v1.0.0'; assets = @() } }
+            if ($Method -eq 'Get' -and $Uri -like '*/assets?per_page=100') { return @() }
+            if ($Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*') { throw (New-GitHubUploadFailure -StatusCode 503 -Message 'Error creating asset temp dir' -Body '{"message":"Error creating asset temp dir"}') }
+            return $null
+        }
+
+        { Invoke-PublishScript -PlanPath $fixture.PlanPath -ProvenancePath $fixture.ProvenancePath } |
+            Should -Throw "*web-v1.0.0.zip*web/v1.0.0*attempt 5 of 5*status=503*Error creating asset temp dir*"
+        Should -Invoke Invoke-RestMethod -ParameterFilter { $Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*' } -Times 5 -Exactly
+    }
+
+    It 'fails fast on a permanent authentication/validation failure without retrying' {
+        $fixture = New-GitHubAssetUploadFixture -TestDrive $TestDrive
+        Mock Start-Sleep {}
+        Mock Invoke-RestMethod {
+            if ($Method -eq 'Get' -and $Uri -like '*/tags/*') { return [pscustomobject]@{ id = 1; tag_name = 'web/v1.0.0'; assets = @() } }
+            if ($Method -eq 'Get' -and $Uri -like '*/assets?per_page=100') { return @() }
+            if ($Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*') { throw (New-GitHubUploadFailure -StatusCode 401 -Message 'Bad credentials' -Body '{"message":"Bad credentials"}') }
+            return $null
+        }
+
+        { Invoke-PublishScript -PlanPath $fixture.PlanPath -ProvenancePath $fixture.ProvenancePath } | Should -Throw '*status=401*'
+        Should -Invoke Invoke-RestMethod -ParameterFilter { $Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*' } -Times 1 -Exactly
+    }
+
+    It 'reconciles an ambiguous failure when the asset already exists with a matching digest' {
+        $fixture = New-GitHubAssetUploadFixture -TestDrive $TestDrive
+        Mock Start-Sleep {}
+        Mock Invoke-RestMethod {
+            if ($Method -eq 'Get' -and $Uri -like '*/tags/*') { return [pscustomobject]@{ id = 1; tag_name = 'web/v1.0.0'; assets = @() } }
+            if ($Method -eq 'Get' -and $Uri -like '*/assets?per_page=100') {
+                return @([pscustomobject]@{ name = 'web-v1.0.0.zip'; digest = "sha256:$($fixture.Sha256)" })
+            }
+            if ($Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*') {
+                # Simulate a dropped connection: the request may well have reached
+                # GitHub and created the asset, but the client never saw a response.
+                $ex = [System.Net.Http.HttpRequestException]::new('The connection was reset')
+                throw $ex
+            }
+            return $null
+        }
+
+        { Invoke-PublishScript -PlanPath $fixture.PlanPath -ProvenancePath $fixture.ProvenancePath } | Should -Not -Throw
+        Should -Invoke Invoke-RestMethod -ParameterFilter { $Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*' } -Times 1 -Exactly
+    }
+
+    It 'throws when a reconciled asset exists with a different digest' {
+        $fixture = New-GitHubAssetUploadFixture -TestDrive $TestDrive
+        Mock Start-Sleep {}
+        Mock Invoke-RestMethod {
+            if ($Method -eq 'Get' -and $Uri -like '*/tags/*') { return [pscustomobject]@{ id = 1; tag_name = 'web/v1.0.0'; assets = @() } }
+            if ($Method -eq 'Get' -and $Uri -like '*/assets?per_page=100') {
+                return @([pscustomobject]@{ name = 'web-v1.0.0.zip'; digest = 'sha256:' + ('0' * 64) })
+            }
+            if ($Method -eq 'Post' -and $Uri -like '*name=web-v1.0.0.zip*') {
+                $ex = [System.Net.Http.HttpRequestException]::new('The connection was reset')
+                throw $ex
+            }
+            return $null
+        }
+
+        { Invoke-PublishScript -PlanPath $fixture.PlanPath -ProvenancePath $fixture.ProvenancePath } | Should -Throw '*different or unavailable SHA-256 digest*'
+    }
+}
+
+Describe 'GitHub release asset upload retry/backoff helpers' {
+    BeforeAll {
+        $script:helperPlanPath = Join-Path $TestDrive 'helpers-empty-plan.json'
+        $script:helperProvenancePath = Join-Path $TestDrive 'helpers-empty-provenance.json'
+        [pscustomobject]@{ releases = @() } | ConvertTo-Json -Depth 4 | Set-Content $script:helperPlanPath
+        [pscustomobject]@{ artifacts = @() } | ConvertTo-Json -Depth 4 | Set-Content $script:helperProvenancePath
+        . "$PSScriptRoot/../providers/github/Publish-GitHubReleaseAssets.ps1" -PlanPath $script:helperPlanPath -ProvenancePath $script:helperProvenancePath -Repository 'example/repository' -Token 'test-token'
+    }
+
+    It 'treats missing status codes and 408/429/5xx as retryable' {
+        Test-GitHubApiErrorRetryable -StatusCode $null | Should -BeTrue
+        Test-GitHubApiErrorRetryable -StatusCode 408 | Should -BeTrue
+        Test-GitHubApiErrorRetryable -StatusCode 429 | Should -BeTrue
+        Test-GitHubApiErrorRetryable -StatusCode 500 | Should -BeTrue
+        Test-GitHubApiErrorRetryable -StatusCode 503 | Should -BeTrue
+    }
+
+    It 'treats authentication, authorization, and validation failures as non-retryable' {
+        Test-GitHubApiErrorRetryable -StatusCode 401 | Should -BeFalse
+        Test-GitHubApiErrorRetryable -StatusCode 403 | Should -BeFalse
+        Test-GitHubApiErrorRetryable -StatusCode 404 | Should -BeFalse
+        Test-GitHubApiErrorRetryable -StatusCode 422 | Should -BeFalse
+    }
+
+    It 'uses exponential backoff when no Retry-After is present' {
+        Get-GitHubApiRetryDelaySeconds -Attempt 1 -RetryAfterSeconds $null | Should -Be 1
+        Get-GitHubApiRetryDelaySeconds -Attempt 2 -RetryAfterSeconds $null | Should -Be 2
+        Get-GitHubApiRetryDelaySeconds -Attempt 3 -RetryAfterSeconds $null | Should -Be 4
+    }
+
+    It 'honors Retry-After over exponential backoff' {
+        Get-GitHubApiRetryDelaySeconds -Attempt 1 -RetryAfterSeconds 30 | Should -Be 30
+        Get-GitHubApiRetryDelaySeconds -Attempt 4 -RetryAfterSeconds 7 | Should -Be 7
+    }
+
+    It 'extracts status code, Retry-After, and body from an HTTP error response' {
+        $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::TooManyRequests)
+        $response.Headers.Add('Retry-After', '12')
+        $response.Content = [System.Net.Http.StringContent]::new('{"message":"rate limited"}')
+        $ex = [System.Net.Http.HttpRequestException]::new('Too Many Requests')
+        $ex | Add-Member -NotePropertyName Response -NotePropertyValue $response -Force
+        $errorRecord = $null
+        try { throw $ex } catch { $errorRecord = $_ }
+
+        $detail = Get-GitHubApiErrorDetail -ErrorRecord $errorRecord
+        $detail.StatusCode | Should -Be 429
+        $detail.RetryAfterSeconds | Should -Be 12
+        $detail.Body | Should -Match 'rate limited'
+    }
+
+    It 'falls back to the exception message when no response is available' {
+        $errorRecord = $null
+        try { throw [System.Net.Http.HttpRequestException]::new('DNS resolution failed') } catch { $errorRecord = $_ }
+
+        $detail = Get-GitHubApiErrorDetail -ErrorRecord $errorRecord
+        $detail.StatusCode | Should -BeNullOrEmpty
+        $detail.Body | Should -Match 'DNS resolution failed'
+    }
+}
+
 Describe 'Release packaging flow' {
     It 'creates a nonexistent output directory and writes empty provenance for an empty plan' {
         $planPath = Join-Path $TestDrive 'empty-plan.json'
