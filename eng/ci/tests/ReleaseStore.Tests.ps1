@@ -42,6 +42,39 @@ Describe 'Durable GitHub release store' {
         Mock Invoke-WebRequest { param($OutFile) Set-Content $OutFile 'changed bytes' }
         { Get-StoredAsset $release 'source.zip' $TestDrive } | Should -Throw '*failed its GitHub checksum*'
     }
+    It 'retries transient uploads.github.com failures and eventually succeeds' {
+        $path = Join-Path $TestDrive 'asset.zip'
+        Set-Content $path 'bytes'
+        Mock Invoke-ReleaseApi { @() }
+        Mock Start-Sleep {}
+        $script:uploadAttempts = 0
+        Mock Invoke-RestMethod {
+            $script:uploadAttempts++
+            if ($script:uploadAttempts -lt 3) {
+                $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::ServiceUnavailable)
+                $response.Headers.Add('X-GitHub-Request-Id', 'abc123')
+                $ex = [System.Net.Http.HttpRequestException]::new('Error saving asset')
+                $ex | Add-Member -NotePropertyName Response -NotePropertyValue $response -Force
+                throw $ex
+            }
+        }
+        { Add-StoredAsset $release $path } | Should -Not -Throw
+        Should -Invoke Invoke-RestMethod -Times 3
+    }
+    It 'fails fast on a non-transient upload rejection without retrying' {
+        $path = Join-Path $TestDrive 'asset2.zip'
+        Set-Content $path 'bytes'
+        Mock Invoke-ReleaseApi { @() }
+        Mock Start-Sleep {}
+        Mock Invoke-RestMethod {
+            $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::UnprocessableEntity)
+            $ex = [System.Net.Http.HttpRequestException]::new('Validation failed')
+            $ex | Add-Member -NotePropertyName Response -NotePropertyValue $response -Force
+            throw $ex
+        }
+        { Add-StoredAsset $release $path } | Should -Throw '*status=422*'
+        Should -Invoke Invoke-RestMethod -Times 1
+    }
     It 'peels annotated tags and rejects a changed source commit' {
         Mock Invoke-ReleaseApi {
             if ($Path -like 'git/ref/*') { [pscustomobject]@{ object = [pscustomobject]@{ type = 'tag'; sha = 'b' * 40 } } }

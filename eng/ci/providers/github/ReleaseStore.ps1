@@ -58,7 +58,33 @@ function Add-StoredAsset {
         return
     }
     $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-    Invoke-RestMethod -Method Post -Uri "https://uploads.github.com/repos/$Repository/releases/$($Release.id)/assets?name=$([uri]::EscapeDataString($Name))" -Headers $headers -ContentType 'application/octet-stream' -InFile $Path | Out-Null
+    $uri = "https://uploads.github.com/repos/$Repository/releases/$($Release.id)/assets?name=$([uri]::EscapeDataString($Name))"
+    $maxAttempts = 4
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/octet-stream' -InFile $Path | Out-Null
+            return
+        } catch {
+            $statusCode = $null
+            $requestId = $null
+            if ($_.Exception.PSObject.Properties.Name -contains 'Response' -and $_.Exception.Response) {
+                try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+                try {
+                    $responseHeaders = $_.Exception.Response.Headers
+                    if ($responseHeaders.Contains('X-GitHub-Request-Id')) { $requestId = ($responseHeaders.GetValues('X-GitHub-Request-Id') | Select-Object -First 1) }
+                    elseif ($responseHeaders['X-GitHub-Request-Id']) { $requestId = $responseHeaders['X-GitHub-Request-Id'] }
+                } catch {}
+            }
+            # GitHub's asset-storage backend intermittently rejects uploads with a generic
+            # "Error saving asset" 5xx response that succeeds on retry; anything else (4xx,
+            # or the final attempt) is treated as terminal.
+            $transient = (-not $statusCode) -or $statusCode -ge 500
+            if (-not $transient -or $attempt -eq $maxAttempts) {
+                throw "Failed to upload release asset '$Name' to release '$($Release.tag_name)' (attempt $attempt/$maxAttempts, status=$statusCode, requestId=$requestId): $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds ([math]::Pow(2, $attempt - 1))
+        }
+    }
 }
 
 function Save-ReleaseJson {
