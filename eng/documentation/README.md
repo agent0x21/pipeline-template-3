@@ -27,4 +27,4 @@ Consume the verified handoff's release ID, source SHA, artifact paths/checksums 
 
 The frontend accepts a separately hosted runtime-config.json; .NET configuration remains external. WPF distribution is manual ZIP delivery until an installer/distribution adapter is explicitly added.
 
-See [provider mappings](PROVIDER-MAPPINGS.md) and [adoption templates](templates/README.md).
+See [provider mappings](PROVIDER-MAPPINGS.md) and [adoption templates](../ci/templates/README.md).

@@ -59,10 +59,12 @@ Supply that file separately at installation; never modify the application ZIP. A
 
 ## Operations
 
-- [Release contract and workflow inputs](eng/ci/RELEASE-STANDARD.md)
-- [Cutover and GitHub settings](eng/ci/MIGRATION.md)
-- [Retry and recovery](eng/ci/RECOVERY.md)
-- [Implementation progress and resume notes](eng/ci/ROADMAP.md)
-- [PowerShell tooling and provider portability](eng/ci/README.md)
+- [Functional requirements document: release and versioning pipeline](eng/documentation/FUNCTIONAL-REQUIREMENTS.md) — scope, numbered requirements, lifecycle and acceptance criteria.
+- [Discovery engine functional requirements](eng/documentation/DISCOVERY-REQUIREMENTS.md) — planned repository analysis and reviewed generation of `.releasepipeline.yml`; not yet implemented.
+- [Release contract and workflow inputs](eng/documentation/RELEASE-STANDARD.md)
+- [Cutover and GitHub settings](eng/documentation/MIGRATION.md)
+- [Retry and recovery](eng/documentation/RECOVERY.md)
+- [Implementation progress and resume notes](eng/documentation/ROADMAP.md)
+- [PowerShell tooling and provider portability](eng/documentation/README.md)
 
 Actual installation is manual. Environment jobs use `deployment: false`, so an approval or artifact handoff is not reported as a successful application deployment.

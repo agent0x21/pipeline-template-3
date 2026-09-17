@@ -6,7 +6,7 @@ This repository is a pnpm workspace. The browser client is in `apps/web` (React,
 
 ## Project Tracking
 
-Read [`eng/ci/ROADMAP.md`](eng/ci/ROADMAP.md) before making CI/CD changes. Keep its checkboxes and “Current focus” section aligned with the implementation, and treat `prompt/main-prompt.md` as the complete product requirements source.
+Read [`eng/documentation/ROADMAP.md`](eng/documentation/ROADMAP.md) before making CI/CD changes. Keep its checkboxes and “Current focus” section aligned with the implementation, and treat `prompt/main-prompt.md` as the complete product requirements source.
 
 Use `main` as the only permanent branch. DEV and RC artifacts are manually requested; QA and PROD promote a persisted release identity without rebuilding or moving branches. Installation remains manual. Keep roadmap validation/resume notes current, and do not apply live governance settings or delete historical branches/releases as an incidental code change.
 

@@ -48,8 +48,16 @@ Create hotfix branches from production component/release-set tags; build/test a 
 
 Provide a migration checklist for outstanding dev/qa work, main protections, tag rules, environments/reviewers/secrets and retiring old branches. Do not delete historical tags or perform live governance changes as an implicit code-edit step.
 
+## Repository discovery and configuration generation (planned)
+
+Add a provider-neutral discovery and scaffolding engine as specified in [DISCOVERY-REQUIREMENTS.md](../eng/documentation/DISCOVERY-REQUIREMENTS.md), including its repository integration clarifications in section 60. That document is the detailed discovery requirements extension to this product requirements source; the engine is not yet implemented.
+
+Discover JavaScript/TypeScript, React, Node, modern and legacy .NET projects; infer build/test/artifact candidates from static evidence; distinguish npm/NuGet publication capability from release intent; and report dependencies, watch relationships, direct/transitive impact, confidence and unresolved findings in a versioned model. Do not execute repository code during discovery or guess registries, credentials, approval policy or environments.
+
+Generate reviewable `.releasepipeline.yml` proposals using supported parser/adapter capabilities. Preserve all existing human-authored configuration. Default discovery is read-only; scaffolding emits a proposal; explicit apply may create a complete valid new file using caller-supplied policy or a selected template, or add selected missing component entries. Validate before writing, detect concurrent edits and make repeat application idempotent. Discovery does not replace release version planning, build execution or the existing QA/PROD approval and recovery contracts.
+
 ## Validation and documentation
 
 Maintain Pester tests for versioning, source eligibility, affected scope, hotfixes, immutable identity, publication recovery and workflow boundaries. Run web lint/build, API/desktop builds and configured tests. Verify the live workflow lifecycle on a Windows test runner before cutover.
 
-Keep eng/ci/ROADMAP.md restartable: ordered checkboxes, current focus, results, blockers, next steps and separate external cutover tasks. Documentation must explain manual DEV creation, RC selection, QA sign-off, production promotion, hotfixes and retry behavior without environment-branch instructions.
+Keep eng/documentation/ROADMAP.md restartable: ordered checkboxes, current focus, results, blockers, next steps and separate external cutover tasks. Documentation must explain manual DEV creation, RC selection, QA sign-off, production promotion, hotfixes and retry behavior without environment-branch instructions.
