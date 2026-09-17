@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 60
     environment:
       name: DEV
-      deployment: false
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     permissions:
       contents: read
       packages: write
@@ -90,7 +90,7 @@ jobs:
 
           🔄 Building development artifacts…
 
-          No deployment or release tags will be created.
+          A DEV artifact-handoff record will link to this run; no application installation or release tags will be created.
           "@ >> $env:GITHUB_STEP_SUMMARY
 
       - name: Checkout requested source
@@ -167,5 +167,5 @@ jobs:
           **Artifact:** ``$env:ARTIFACT_NAME``  
           **Retention:** 7 days
 
-          Download this run's artifacts for manual installation. No deployment or release tags were created.
+          This environment deployment record represents the DEV artifact handoff only. Download this run's artifacts for manual installation; no release tags were created.
           "@ >> $env:GITHUB_STEP_SUMMARY

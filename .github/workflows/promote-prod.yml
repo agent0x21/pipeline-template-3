@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 45
     environment:
       name: PROD
-      deployment: false
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.release_id }}
     concurrency:
       group: release-publication
       cancel-in-progress: false

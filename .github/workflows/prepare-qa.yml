@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 30
     environment:
       name: QA
-      deployment: false
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.release_id }}
     permissions:
       contents: write
       packages: read

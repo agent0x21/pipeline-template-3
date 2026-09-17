@@ -123,13 +123,14 @@ Describe 'Workflow boundaries' {
         $dev = Get-Content "$root/dev-build.yml" -Raw | ConvertFrom-Yaml
         @($dev.on.Keys) | Should -Be @('workflow_dispatch')
         $dev.jobs.build.environment.name | Should -Be 'DEV'
-        $dev.jobs.build.environment.deployment | Should -BeFalse
+        $dev.jobs.build.environment.ContainsKey('deployment') | Should -BeFalse
+        $dev.jobs.build.environment.url | Should -Match '/actions/runs/'
     }
     It 'has no builds or branch updates in QA or production workflows' {
         foreach ($name in @('prepare-qa','promote-prod')) {
             $text = Get-Content "$PSScriptRoot/../../../.github/workflows/$name.yml" -Raw
             $text | Should -Not -Match 'dotnet (build|publish)|pnpm .*build|docker build|Update-PromotionBranch'
-            $text | Should -Match 'deployment: false'
+            $text | Should -Match 'releases/tag/\$\{\{ inputs.release_id \}\}'
         }
     }
 }

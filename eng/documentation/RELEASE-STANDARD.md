@@ -44,4 +44,4 @@ Version allocation and publication share the release-publication concurrency gro
 
 A draft release stores the original plan and staged build bundle before component publication. Retry the original run to reuse that plan, bundle and bytes. Once published, asset names cannot be overwritten with different hashes. A new dispatch is a new release request, not a retry. See [recovery](RECOVERY.md).
 
-GitHub Environments are DEV (no reviewers), QA and PROD (separate required reviewers). Workflows use environment protection without deployment tracking because installation remains manual. Do not add environment-specific compilation or repackaging when connecting future deployment adapters.
+GitHub Environments are DEV (no reviewers), QA and PROD (separate required reviewers). Each environment job creates a GitHub deployment record that represents its artifact handoff or stable publication, with a URL to the relevant run or persisted release set; it does not claim that installation occurred. Do not add environment-specific compilation or repackaging when connecting future deployment adapters.
