@@ -1,37 +1,29 @@
-Delete **all remote tags** from `origin`:
+**Delete all remote tags from `origin`:**
 
 ```powershell
-git tag -l | ForEach-Object {
-    git push origin --delete $_
-}
+git ls-remote --tags --refs origin | ForEach-Object { ($_ -split "`t")[1] -replace '^refs/tags/', '' } | ForEach-Object { git push origin --delete $_ }
 ```
 
-Delete **all local tags**:
+**Delete all local tags:**
 
 ```powershell
-git tag -l | ForEach-Object {
-    git tag -d $_
-}
+git tag -l | ForEach-Object { git tag -d $_ }
 ```
 
-Delete **both remote and local tags** using the same captured tag list:
+**Delete all remote and local tags:**
 
 ```powershell
-$tags = git tag -l
-
-$tags | ForEach-Object {
-    git push origin --delete $_
-}
-
-$tags | ForEach-Object {
-    git tag -d $_
-}
+$remoteTags = git ls-remote --tags --refs origin | ForEach-Object { ($_ -split "`t")[1] -replace '^refs/tags/', '' }; $localTags = git tag -l; $remoteTags | ForEach-Object { git push origin --delete $_ }; $localTags | ForEach-Object { git tag -d $_ }
 ```
 
-And to preview them first:
+**Preview remote tags:**
+
+```powershell
+git ls-remote --tags --refs origin | ForEach-Object { ($_ -split "`t")[1] -replace '^refs/tags/', '' }
+```
+
+**Preview local tags:**
 
 ```powershell
 git tag -l
 ```
-
-The `$tags = git tag -l` version is preferable for deleting both, because after deleting local tags you no longer have the local list available.
