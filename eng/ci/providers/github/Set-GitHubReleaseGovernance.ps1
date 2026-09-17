@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][ValidatePattern('^[\w.-]+/[\w.-]+$')][string]$Repository,
-    [Parameter(Mandatory)][string[]]$DevReviewer,
+    [string[]]$DevReviewer = @(),
     [Parameter(Mandatory)][string[]]$QaReviewer,
     [Parameter(Mandatory)][string[]]$ProductionReviewer,
     [switch]$AllowSelfReview
@@ -10,6 +10,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/ReleaseStore.ps1"
 if (-not $env:GH_TOKEN) { throw 'Set GH_TOKEN to an administration-capable short-lived token. No token is accepted as a command-line argument.' }
+if (@($QaReviewer | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) {
+    throw 'At least one QA reviewer is required.'
+}
+if (@($ProductionReviewer | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) {
+    throw 'At least one PROD reviewer is required.'
+}
 function Get-Reviewers([string[]]$Names) {
     foreach ($name in $Names) {
         if ($name -match '^([^/]+)/([^/]+)$') {

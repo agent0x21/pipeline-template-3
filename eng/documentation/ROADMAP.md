@@ -61,6 +61,8 @@ Not yet verified: real GitHub Actions execution, environment protection behavior
 
 ## Resume instructions
 
+Governance correction, 2026-09-18: the GitHub governance helper now correctly leaves DEV without reviewers, requires nonempty QA and PROD reviewer inputs, and accepts the documented invocation without `-DevReviewer`. Parser validation, a governance `-WhatIf` run, `pwsh -NoProfile -File eng/ci/Invoke-ReleasePipelineTests.ps1` (77 passed, 0 failed), and `git diff --check` passed. Apply no live settings until reviewers are selected and the generated `-WhatIf` output has been reviewed.
+
 Documentation update, 2026-09-18: incorporated the supplied discovery specification, clarified current adapter/dependency support and added configuration-generation acceptance criteria. Read its section 60 before planning implementation. This is documentation only; `.releasepipeline.yml`, application code and workflows are unchanged. Discovery tests have not been implemented or run.
 
 Documentation update, 2026-09-17: added [functional requirements](FUNCTIONAL-REQUIREMENTS.md) and linked the document from the root README. Requirements and acceptance scenarios were checked against the current workflows, configuration, release planning and handoff/recovery implementation. This documentation-only update does not complete any external cutover checks or change pipeline behavior.
